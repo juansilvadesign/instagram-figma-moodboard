@@ -1,0 +1,89 @@
+/* Injected download button — inherits the action bar's icon color via currentColor. */
+.igfm-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.igfm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 8px;
+  cursor: pointer;
+  color: currentColor;
+  border-radius: 50%;
+  line-height: 0;
+}
+
+.igfm-btn:hover {
+  opacity: 0.55;
+}
+
+.igfm-btn.igfm-loading svg {
+  animation: igfm-spin 0.9s linear infinite;
+  opacity: 0.6;
+}
+
+.igfm-btn.igfm-done {
+  color: #00a35c;
+}
+
+.igfm-btn.igfm-error {
+  color: #ed4956;
+}
+
+/* Fallback placement when no action bar is found: pinned inside the post container,
+   below the header row so it doesn't collide with the "..." menu. */
+.igfm-anchor {
+  position: relative;
+}
+
+.igfm-btn.igfm-overlay {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 99;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+@keyframes igfm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Bottom-center status toast (twitter-video-downloader pattern). */
+.igfm-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 12px);
+  background: #262626;
+  color: #fff;
+  font: 14px/1.4 -apple-system, 'Segoe UI', Roboto, sans-serif;
+  padding: 10px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 2147483647;
+  max-width: 80vw;
+}
+
+.igfm-toast.igfm-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.igfm-toast-ok {
+  background: #1b5e35;
+}
+
+.igfm-toast-err {
+  background: #8e1e2d;
+}
