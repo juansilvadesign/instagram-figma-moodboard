@@ -25,10 +25,13 @@ Click the arrow on any post — feed, profile-grid modal, or `/p/…` / `/reel/�
 reports progress and the saved file count. Carousels download every item, numbered `-01, -02, …`.
 Videos save as progressive MP4 (audio included).
 
-## Verify in Chrome (manual pass — pending)
+## Verify in Chrome (manual regression checklist)
 
-This WSL env has no GUI Chrome, so the automated tests below can't click the real page. The MVP
-counts as **verified** when, in a logged-in Chrome:
+> First pass ✅ 2026-07-08 — confirmed working on live posts. Re-run this list after any change to
+> the DOM heuristics in `content.js`.
+
+This WSL env has no GUI Chrome, so the automated tests can't click the real page. A change counts
+as **verified** when, in a logged-in Chrome:
 
 - [ ] Feed **single image** post → 1 correctly-named `.jpg`/`.webp` in `Downloads/instagram-captures/`
 - [ ] Feed **carousel** → all items land, `-01…-NN`, mixed image/video types correct

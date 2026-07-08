@@ -89,6 +89,9 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
    slide ± neighbors; `carousel_media` / `edge_sidecar_to_children` has all of them.
 9. **Videos also carry `image_versions2`** (poster frame) — check `video_versions` first or every
    video downloads as a JPG.
+10. **Append the button to the action-bar section's END, never into its first svg-bearing child**
+    — each action sits in its own span, so "first child with an svg" = *inside the Like button*
+    (bit us 2026-07-08). The section is the flex row; appending to it lands right of Save.
 
 ## Validate / test
 

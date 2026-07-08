@@ -56,12 +56,13 @@ function inject(container) {
 
   const bar = findActionBar(container);
   if (bar) {
-    // land inside the icon row (next to save) rather than as a new row in the section
-    const row = [...bar.children].find((el) => el.querySelector && el.querySelector('svg[aria-label]')) || bar;
+    // Append as the section's LAST child: the action-bar section IS the flex row (Like/Comment/
+    // Repost/Share left, Save pushed right — live DOM 2026-07-08), so this lands right of Save.
+    // Do NOT append into "the first child holding an svg" — that nests it inside the Like span.
     const wrap = document.createElement('div');
     wrap.className = 'igfm-wrap';
     wrap.appendChild(btn);
-    row.appendChild(wrap);
+    bar.appendChild(wrap);
   } else {
     btn.classList.add('igfm-overlay');
     container.classList.add('igfm-anchor');
