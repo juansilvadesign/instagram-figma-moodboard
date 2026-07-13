@@ -114,11 +114,13 @@ function toast(text, kind = '') {
   toast._t = setTimeout(() => el.classList.remove('igfm-show'), 4500);
 }
 
-// Ask the MAIN-world inject.js to pull this post's media object out of React fiber memory.
-// Details are JSON STRINGS both ways (object details don't reliably cross Chrome's isolated/
-// MAIN world boundary); the container is handed over via a data-igfm-req attribute because the
-// DOM is shared across worlds even though JS objects are not. The raw media object comes back
-// as plain JSON and is normalized HERE (inject.js has no resolver).
+// Ask the MAIN-world inject.js to pull this post's media object out of the page — its
+// network-response cache first (feed/modal GraphQL carries the full carousel), then embedded
+// JSON blobs, then React fiber props. Details are JSON STRINGS both ways (object details don't
+// reliably cross Chrome's isolated/MAIN world boundary); the container is handed over via a
+// data-igfm-req attribute because the DOM is shared across worlds even though JS objects are
+// not. The raw media object comes back as plain JSON and is normalized HERE (inject.js has no
+// resolver).
 function fetchMediaFromReact(container, shortcode) {
   return new Promise((resolve) => {
     const reqId = 'igfm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -145,17 +147,19 @@ function fetchMediaFromReact(container, shortcode) {
         }
       }
       if (!d || d.reqId !== reqId) return;
-      if (d.error) console.warn('[IGFM] fiber extraction reported:', d.error, d.stats || '');
-      else console.log('[IGFM] fiber extraction stats:', d.via || '', d.stats || '');
+      // stats logged as a JSON string so console-scraping tools capture them fully
+      if (d.error) console.warn('[IGFM] page extraction error:', d.error, JSON.stringify(d.stats || {}));
+      else console.log('[IGFM] page extraction:', d.via || 'no-hit', JSON.stringify(d.stats || {}));
       if (!d.media) return finish(null);
       let media = null;
       try {
         media = R.normalizeShortcodeMedia(d.media) || R.normalizeApiV1Item(d.media);
       } catch (err) {
-        console.warn('[IGFM] fiber media normalization failed:', err);
+        console.warn('[IGFM] page media normalization failed:', err);
       }
       if (media) {
-        media.source = 'react_fiber';
+        const via = d.via || '';
+        media.source = via === 'network_cache' || via === 'embedded_json' ? via : 'react_fiber';
         if (!media.shortcode) media.shortcode = shortcode || null;
       }
       finish(media);
@@ -191,20 +195,24 @@ async function runDownload(btn) {
     let media = null;
     let notice = '';
 
-    // First attempt: extract directly from React fiber memory (instant, no network; the only
-    // path that works for sponsored/ad posts and private-account carousels).
+    // First attempt: resolve inside the page (network-response cache → embedded JSON → React
+    // fibers). Instant, no extra requests; the only path that works for sponsored posts and
+    // deferred feed carousels — /p/<code>/ embeds are cover-only for those.
     try {
       media = await fetchMediaFromReact(container, shortcode);
     } catch (e) {
       console.warn('[IGFM] React Fiber extraction failed:', e);
     }
 
-    // Second attempt: fetch from the Instagram API/HTML (needs a shortcode).
-    if (!media && shortcode) {
+    // Second attempt: fetch from the Instagram API/HTML (needs a shortcode). Also runs when
+    // the in-page hit is PARTIAL (cover-only cache entry) — richer result wins, partial is
+    // only a floor.
+    if (shortcode && (!media || media.expectedCount > media.items.length)) {
       try {
-        media = await R.fetchMediaByShortcode(shortcode);
+        const fetched = await R.fetchMediaByShortcode(shortcode);
+        if (!media || (fetched && fetched.items.length > media.items.length)) media = fetched;
       } catch (e) {
-        console.warn('[IGFM] API resolution failed, trying DOM fallback:', (e && e.message) || e);
+        console.warn('[IGFM] API resolution failed:', (e && e.message) || e);
       }
     }
 
@@ -215,6 +223,9 @@ async function runDownload(btn) {
     }
 
     if (!media) throw new Error('no downloadable media found');
+    if (media.expectedCount > media.items.length) {
+      notice = ` — ${media.items.length} of ${media.expectedCount} slides (Instagram withheld the rest)`;
+    }
     const items = R.planDownloads(media);
     console.log(`[IGFM] media resolved via ${media.source}:`, items);
     const res = await chrome.runtime.sendMessage({ type: 'igfm-download', items });

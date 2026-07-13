@@ -17,7 +17,8 @@ sessions in this repo: [`CLAUDE.md`](CLAUDE.md).
    bar (next to Save); if the action bar isn't found, a dark round fallback button appears at the
    post's top-right.
 
-After code changes: `chrome://extensions` → reload the extension → reload the Instagram tab.
+After code changes: `chrome://extensions` → reload the extension → **reload the Instagram tab**
+(required: the network tap that feeds carousel/sponsored downloads installs at page load).
 
 ## Use
 
@@ -38,10 +39,14 @@ as **verified** when, in a logged-in Chrome:
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
-- [ ] **Sponsored/ad post — carousel** → ALL slides land; page console shows
-      `[IGFM-Inject] media found via ancestors:…` and `[IGFM] media resolved via react_fiber`
-- [ ] Regular posts resolve via `react_fiber` (instant) or fall back to `web_info` — check the
-      `[IGFM] media resolved via …` console line; no click may freeze the page (>0.5 s jank)
+- [ ] **Feed carousel with deferred data** (e.g. `/p/DYw5KdMDH6a/`-style: embed is cover-only)
+      → ALL N slides land; console shows `[IGFM-Inject] media found via network_cache` (or
+      `embedded_json`)
+- [ ] **Sponsored/ad post — carousel** → ALL slides land (any of `network_cache` /
+      `embedded_json` / `ancestors:…`)
+- [ ] Regular posts resolve in-page (instant) or fall back to `web_info`/`graphql` — check the
+      `[IGFM] media resolved via …` console line; no click may freeze the page (>0.5 s jank);
+      a partial download must SAY so in the toast (`N of M slides`)
 - [ ] Button survives scrolling far down the feed and back (React re-renders)
 - [ ] Service-worker console (`chrome://extensions` → Inspect views) shows `[IGFM]` trace, no errors
 
@@ -52,17 +57,18 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # resolver (parsers, normalizers, filename plan) + fiber search engine — 32 tests
+node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 41 tests
 node --check extension/*.js
 ```
 
 ## How it resolves media (short version)
 
-Shortcode from the post's links (or the URL) → pull the media object straight out of React
-fiber memory (MAIN-world `inject.js`; the only path that works for sponsored/ad posts) → fetch
-`/p/<shortcode>/` with the session's cookies and parse Instagram's own embedded JSON
-(`xdt_api__v1__media__shortcode__web_info`) → fallback to the GraphQL `doc_id` query →
-last-resort DOM `srcset` harvest (images only). Media URLs are direct
+Shortcode from the post's links (or the URL) → resolve inside the page (MAIN-world
+`inject.js`): a fetch/XHR **tap cache** of the page's own feed/graphql responses (the only
+place full carousel + sponsored data still exists client-side), then server-embedded JSON
+blobs, then React fiber props → fetch `/p/<shortcode>/` and pick the richest embedded JSON
+across all blobs (cover-only embeds declare `carousel_media_count`) → GraphQL `doc_id` query
+(also retried when the embed was partial) → last-resort DOM `srcset` harvest (images only). Media URLs are direct
 CDN files (signed), saved by the service worker via `chrome.downloads`. Details + failure modes:
 [`CLAUDE.md`](CLAUDE.md) → Architecture / Gotchas.
 

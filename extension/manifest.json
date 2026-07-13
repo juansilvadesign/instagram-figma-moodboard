@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Instagram Moodboard Capture",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "One-click download of an Instagram post's media (image, video, carousel) into Downloads/instagram-captures/. Single-post MVP of the Instagram → Figma moodboard pipeline.",
   "permissions": ["downloads"],
   "background": {

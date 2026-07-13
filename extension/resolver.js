@@ -86,10 +86,14 @@ const IGFM_RESOLVER = (() => {
         : [item]);
     const items = leaves.map(leaf).filter(Boolean);
     if (!items.length) return null;
+    // carousel_media_count survives even when the children were deferred out of the payload —
+    // expectedCount > items.length marks a PARTIAL result (cover-only embed).
+    const declared = Number(item.carousel_media_count) || 0;
     return {
       username: (item.user && item.user.username) || (item.owner && item.owner.username) || null,
       shortcode: item.code || item.shortcode || null,
       items,
+      expectedCount: Math.max(declared, items.length),
       source: 'web_info',
     };
   }
@@ -122,10 +126,12 @@ const IGFM_RESOLVER = (() => {
       : (media.carousel_media && media.carousel_media.length ? media.carousel_media : [media]);
     const items = nodes.map(leaf).filter(Boolean);
     if (!items.length) return null;
+    const declared = Number(media.carousel_media_count) || 0;
     return {
       username: (media.owner && media.owner.username) || (media.user && media.user.username) || null,
       shortcode: media.shortcode || media.code || null,
       items,
+      expectedCount: Math.max(declared, items.length),
       source: 'graphql',
     };
   }
@@ -161,6 +167,49 @@ const IGFM_RESOLVER = (() => {
     }));
   }
 
+  // A post page embeds several JSON blobs; with deferred rendering the FIRST web_info can be
+  // cover-only (carousel_media_count declared, children absent) while a LATER chunk carries
+  // the children — so collect every candidate and keep the richest one for the target
+  // shortcode. Pure (html in, media out) so tests can cover the cover-only permutations.
+  const mediaScore = (m) => (m ? m.items.length * 10 + (m.items.some((i) => i.type === 'video') ? 1 : 0) : -1);
+
+  function pickMediaFromHtml(html, shortcode) {
+    const candidates = [];
+    for (const blob of extractJsonBlobs(html)) {
+      const before = candidates.length;
+      const info = deepFind(blob, 'xdt_api__v1__media__shortcode__web_info');
+      if (info && info.items) {
+        for (const it of info.items) {
+          const m = normalizeApiV1Item(it);
+          if (m) candidates.push(m);
+        }
+      }
+      const gm = normalizeShortcodeMedia(deepFind(blob, 'xdt_shortcode_media') || deepFind(blob, 'shortcode_media'));
+      if (gm) candidates.push(gm);
+      // Deferred patch chunks carry bare carousel children with no wrapping item. Only adopt
+      // them for the target when the blob produced NO candidate of its own — a blob with its
+      // own code-bearing media owns its carousel_media (could be a different post's).
+      if (shortcode && candidates.length === before) {
+        const cm = deepFind(blob, 'carousel_media');
+        if (Array.isArray(cm) && cm.length >= 2) {
+          const m = normalizeApiV1Item({ code: shortcode, carousel_media: cm });
+          if (m) candidates.push(m);
+        }
+      }
+    }
+    const matching = shortcode ? candidates.filter((m) => m.shortcode === shortcode) : candidates;
+    const pool = matching.length ? matching : candidates;
+    let best = null;
+    for (const m of pool) if (mediaScore(m) > mediaScore(best)) best = m;
+    if (best && !best.username) {
+      const withUser = pool.find((m) => m.username);
+      if (withUser) best.username = withUser.username;
+    }
+    return best;
+  }
+
+  const isPartialCarousel = (m) => !!m && m.expectedCount > m.items.length;
+
   // ---- browser-only from here down (fetch/document/location) ----
 
   async function fetchPostHtmlMedia(shortcode) {
@@ -170,19 +219,9 @@ const IGFM_RESOLVER = (() => {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`post page HTTP ${res.status}`);
-    const blobs = extractJsonBlobs(await res.text());
-    for (const blob of blobs) {
-      const info = deepFind(blob, 'xdt_api__v1__media__shortcode__web_info');
-      const media = info && info.items && normalizeApiV1Item(info.items[0]);
-      if (media) return media;
-    }
-    // some renders embed the GraphQL shape instead
-    for (const blob of blobs) {
-      const gMedia = deepFind(blob, 'xdt_shortcode_media') || deepFind(blob, 'shortcode_media');
-      const media = normalizeShortcodeMedia(gMedia);
-      if (media) return media;
-    }
-    throw new Error('no media JSON in post page HTML (login wall or markup change?)');
+    const media = pickMediaFromHtml(await res.text(), shortcode);
+    if (!media) throw new Error('no media JSON in post page HTML (login wall or markup change?)');
+    return media;
   }
 
   function csrfToken() {
@@ -222,16 +261,31 @@ const IGFM_RESOLVER = (() => {
     return media;
   }
 
+  // The HTML embed can "succeed" with only the cover (deferred carousel children) — in that
+  // case the GraphQL doc_id query is still tried and the richer result wins; a partial result
+  // is only returned when nothing fuller exists.
   async function fetchMediaByShortcode(shortcode) {
     const errors = [];
-    for (const attempt of [fetchPostHtmlMedia, fetchGraphqlMedia]) {
-      try {
-        const media = await attempt(shortcode);
-        if (!media.shortcode) media.shortcode = shortcode;
-        return media;
-      } catch (e) {
-        errors.push(`${attempt.name}: ${(e && e.message) || e}`);
+    let best = null;
+    try {
+      best = await fetchPostHtmlMedia(shortcode);
+      if (!isPartialCarousel(best)) {
+        if (!best.shortcode) best.shortcode = shortcode;
+        return best;
       }
+      errors.push(`fetchPostHtmlMedia: cover-only (${best.items.length} of ${best.expectedCount})`);
+    } catch (e) {
+      errors.push(`fetchPostHtmlMedia: ${(e && e.message) || e}`);
+    }
+    try {
+      const g = await fetchGraphqlMedia(shortcode);
+      if (!best || g.items.length > best.items.length) best = g;
+    } catch (e) {
+      errors.push(`fetchGraphqlMedia: ${(e && e.message) || e}`);
+    }
+    if (best) {
+      if (!best.shortcode) best.shortcode = shortcode;
+      return best;
     }
     throw new Error(errors.join(' | '));
   }
@@ -277,6 +331,7 @@ const IGFM_RESOLVER = (() => {
     deepFind,
     normalizeApiV1Item,
     normalizeShortcodeMedia,
+    pickMediaFromHtml,
     planDownloads,
     fetchMediaByShortcode,
     mediaFromDom,

@@ -1,9 +1,20 @@
-// inject.js — MAIN-world script: resolves Instagram media straight out of React fiber memory.
+// inject.js — MAIN-world script: resolves Instagram media from what the page already loaded.
 //
-// Why MAIN world: __reactFiber$ keys on DOM nodes are only visible to page-context scripts.
-// Why fibers at all: sponsored/ad posts and private-account posts can't be re-fetched via
-// /p/<code>/ or GraphQL — but the raw media JSON (video_versions, carousel_media, …) is already
-// sitting in the props of the React components that rendered the post.
+// Why MAIN world: window.fetch/XHR wrapping and __reactFiber$ keys are only reachable from the
+// page context. Sponsored/ad posts and deferred carousels can't be re-fetched via /p/<code>/
+// or GraphQL — but the raw media JSON (video_versions, carousel_media, …) already reached the
+// page in its own feed/graphql responses and server-embedded JSON blobs.
+//
+// Source order on a request (first hit wins):
+//   1. network-response cache — fetch/XHR tap on /graphql/query + /api/v1/ (installed at
+//      document_start, before any page script). PRIMARY for feed carousels & sponsored posts:
+//      verified live 2026-07-13 that feed fiber props no longer carry post data (Relay store
+//      era — 2660 fibers walked, zero media objects), and the /p/ embed is cover-only.
+//   2. server-embedded <script type="application/json"> blobs, scanned lazily on first miss.
+//   3. React fiber props/hooks walk — kept for surfaces that still pass fat props and for
+//      no-permalink ads (generic ancestor match needs no shortcode).
+// The cache is in-page memory only (LRU, never persisted) and is consulted strictly on the
+// user's explicit click — no bulk harvesting.
 //
 // Traversal contract (2026-07-13 rewrite — see CLAUDE.md Gotcha #11):
 //   • The post's data props live on ANCESTOR component fibers of the <article> host fiber.
@@ -263,6 +274,192 @@
     });
   }
 
+  // ---- network-response tap + media cache -----------------------------------------------
+
+  const TAP_URL_RE = /\/graphql\/query|\/api\/v1\//;
+  const MEDIA_CACHE_MAX = 400;
+  const mediaCache = new Map(); // shortcode -> richest raw media object seen
+
+  const childCount = (m) => {
+    try {
+      if (m.carousel_media && m.carousel_media.length) return m.carousel_media.length;
+      const e = m.edge_sidecar_to_children;
+      if (e && e.edges && e.edges.length) return e.edges.length;
+    } catch { /* proxy */ }
+    return 0;
+  };
+
+  const richness = (m) => {
+    let r = childCount(m) * 10;
+    try {
+      if (m.video_versions || m.video_url) r += 2;
+      if (m.image_versions2 || m.display_resources || m.display_url) r += 1;
+    } catch { /* proxy */ }
+    return r;
+  };
+
+  // Keep the richest version per code (feed responses carry full carousel_media; the /p/ embed
+  // may be cover-only). Map insertion order doubles as the LRU order.
+  function cachePut(media) {
+    let code;
+    try {
+      code = media.code || media.shortcode;
+    } catch {
+      return;
+    }
+    if (typeof code !== 'string' || code.length < 5) return;
+    const prev = mediaCache.get(code);
+    const keep = prev && richness(prev) >= richness(media) ? prev : media;
+    mediaCache.delete(code);
+    mediaCache.set(code, keep);
+    if (mediaCache.size > MEDIA_CACHE_MAX) mediaCache.delete(mediaCache.keys().next().value);
+  }
+
+  // GraphQL @defer streams arrive as newline-delimited JSON chunks — a plain JSON.parse of the
+  // body fails, but each line parses on its own. The deferred chunks are exactly where carousel
+  // children land.
+  function parseJsonChunks(text) {
+    if (typeof text !== 'string' || !text) return [];
+    try {
+      return [JSON.parse(text)];
+    } catch { /* multi-chunk body */ }
+    const out = [];
+    for (const line of text.split('\n')) {
+      const s = line.trim();
+      if (!s) continue;
+      try {
+        out.push(JSON.parse(s));
+      } catch { /* not a JSON line */ }
+    }
+    return out;
+  }
+
+  // Harvest every media-shaped object out of a parsed payload (timeline, graphql, embedded
+  // blob). Unlike the fiber search this must NOT skip underscore keys — Relay wraps results in
+  // __bbox — and must go deep (timeline nests media ~10 levels down). Iterative, budgeted.
+  function collectMedia(root, put, budget) {
+    const deadline = now() + (budget && budget.ms !== undefined ? budget.ms : 120);
+    let nodes = budget && budget.nodes !== undefined ? budget.nodes : 150000;
+    const visited = new Set();
+    const stack = [root];
+    while (stack.length) {
+      if (--nodes <= 0 || now() > deadline) return false; // budget hit — partial harvest
+      const v = stack.pop();
+      if (!v || typeof v !== 'object') continue;
+      if (visited.has(v)) continue;
+      visited.add(v);
+      if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) stack.push(v[i]);
+        continue;
+      }
+      if (looksLikeMedia(v, null)) put(v);
+      let keys;
+      try {
+        keys = Object.keys(v);
+      } catch {
+        continue;
+      }
+      for (let i = 0; i < keys.length; i++) {
+        let val;
+        try {
+          val = v[keys[i]];
+        } catch {
+          continue;
+        }
+        if (val && typeof val === 'object') stack.push(val);
+      }
+    }
+    return true;
+  }
+
+  function ingestResponseText(text) {
+    for (const payload of parseJsonChunks(text)) collectMedia(payload, cachePut, { ms: 120 });
+  }
+
+  // Wrap fetch + XHR before any page script runs. Ingestion is deferred off the response's
+  // critical path; every layer is try/caught so a tap failure can never break Instagram.
+  function installNetworkTap() {
+    try {
+      const origFetch = window.fetch;
+      if (typeof origFetch === 'function') {
+        window.fetch = function (input) {
+          const p = origFetch.apply(this, arguments);
+          try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (TAP_URL_RE.test(url)) {
+              p.then((res) => {
+                try {
+                  if (res && res.ok) {
+                    res.clone().text().then(
+                      (t) => setTimeout(() => {
+                        try { ingestResponseText(t); } catch { /* never break the page */ }
+                      }, 0),
+                      () => {},
+                    );
+                  }
+                } catch { /* opaque/locked body */ }
+              }, () => {});
+            }
+          } catch { /* never break the page */ }
+          return p;
+        };
+      }
+      const XHR = window.XMLHttpRequest;
+      if (XHR && XHR.prototype) {
+        const origOpen = XHR.prototype.open;
+        const origSend = XHR.prototype.send;
+        XHR.prototype.open = function (method, url) {
+          try {
+            this.__igfmUrl = String(url || '');
+          } catch { /* never break the page */ }
+          return origOpen.apply(this, arguments);
+        };
+        XHR.prototype.send = function () {
+          try {
+            if (this.__igfmUrl && TAP_URL_RE.test(this.__igfmUrl)) {
+              this.addEventListener('load', () => {
+                try {
+                  const rt = this.responseType;
+                  const text =
+                    rt === '' || rt === 'text'
+                      ? this.responseText
+                      : rt === 'json'
+                        ? JSON.stringify(this.response)
+                        : null;
+                  if (text) {
+                    setTimeout(() => {
+                      try { ingestResponseText(text); } catch { /* never break the page */ }
+                    }, 0);
+                  }
+                } catch { /* never break the page */ }
+              });
+            }
+          } catch { /* never break the page */ }
+          return origSend.apply(this, arguments);
+        };
+      }
+    } catch { /* never break the page */ }
+  }
+
+  // Server-embedded Relay payloads (first feed posts, permalink pages) live in
+  // <script type="application/json"> blobs. Scanned lazily on the first cache miss; each
+  // element only once (SPA navs add new ones).
+  const scannedScripts = typeof WeakSet !== 'undefined' ? new WeakSet() : new Set();
+  function scanInlineScripts() {
+    let scanned = 0;
+    for (const s of document.querySelectorAll('script[type="application/json"]')) {
+      if (scannedScripts.has(s)) continue;
+      scannedScripts.add(s);
+      scanned++;
+      try {
+        for (const payload of parseJsonChunks(s.textContent)) collectMedia(payload, cachePut, { ms: 150 });
+      } catch { /* skip blob */ }
+    }
+    return scanned;
+  }
+
+  // ---- fiber access ----------------------------------------------------------------------
+
   function getFiber(el) {
     if (!el) return null;
     try {
@@ -304,6 +501,7 @@
   }
 
   if (typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
+    if (typeof window !== 'undefined') installNetworkTap();
     document.addEventListener('igfm-request-react', (e) => {
       let req = e && e.detail;
       if (typeof req === 'string') {
@@ -327,42 +525,64 @@
         document.dispatchEvent(new CustomEvent('igfm-response-react', { detail }));
       };
       try {
-        const container = resolveContainer(reqId, shortcode);
-        if (!container) {
-          respond({ media: null, error: 'container not found' });
-          return;
-        }
         const t0 = now();
-        const state = makeState(350, 60000);
-        const containerFiber = getFiber(container);
-        const mediaEl = container.querySelector('img[srcset], video, img');
-        const result = findMediaFromFiberGraph(
-          [getFiber(mediaEl), containerFiber, containerFiber ? null : findFiberedDescendant(container)],
-          shortcode,
-          state,
-        );
+        let raw = null;
+        let via = null;
+        let scriptsScanned = 0;
+        // 1. network-response cache (primary: feed/modal GraphQL has the full carousel)
+        if (shortcode && mediaCache.has(shortcode)) {
+          raw = mediaCache.get(shortcode);
+          via = 'network_cache';
+        }
+        // 2. server-embedded JSON blobs (first feed posts, permalink pages)
+        if (!raw) {
+          scriptsScanned = scanInlineScripts();
+          if (shortcode && mediaCache.has(shortcode)) {
+            raw = mediaCache.get(shortcode);
+            via = 'embedded_json';
+          }
+        }
+        // 3. fiber props/hooks walk (surfaces that still pass fat props; no-permalink ads)
+        let state = null;
+        if (!raw) {
+          const container = resolveContainer(reqId, shortcode);
+          if (container) {
+            state = makeState(350, 60000);
+            const containerFiber = getFiber(container);
+            const mediaEl = container.querySelector('img[srcset], video, img');
+            const result = findMediaFromFiberGraph(
+              [getFiber(mediaEl), containerFiber, containerFiber ? null : findFiberedDescendant(container)],
+              shortcode,
+              state,
+            );
+            raw = result.media;
+            via = result.via;
+          }
+        }
         const stats = {
           ms: Math.round(now() - t0),
-          fibers: state.fibersVisited,
-          propBudgetLeft: state.propsLeft,
-          deadlineHit: state.deadlineHit,
+          via,
+          cacheSize: mediaCache.size,
+          scriptsScanned,
+          fibers: state ? state.fibersVisited : 0,
+          deadlineHit: state ? state.deadlineHit : false,
         };
         console.log(
           '[IGFM-Inject]',
-          result.media ? 'media found via ' + result.via : 'no media in fiber graph',
-          stats,
+          raw ? 'media found via ' + via : 'no media found in page',
+          JSON.stringify(stats),
           'shortcode=' + shortcode,
         );
         let media = null;
-        if (result.media) {
+        if (raw) {
           try {
-            media = JSON.parse(safeJsonStringify(result.media));
+            media = JSON.parse(safeJsonStringify(raw));
           } catch (err) {
             respond({ media: null, error: 'media not serializable: ' + err.message, stats });
             return;
           }
         }
-        respond({ media, via: result.via, stats });
+        respond({ media, via, stats });
       } catch (err) {
         console.error('[IGFM-Inject] extraction error:', err);
         respond({ media: null, error: String((err && err.message) || err) });
@@ -378,6 +598,10 @@
     findMediaFromFiberGraph,
     safeJsonStringify,
     makeState,
+    parseJsonChunks,
+    collectMedia,
+    cachePut,
+    _mediaCache: mediaCache,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api; // node tests

@@ -405,6 +405,106 @@ t('fiber → sanitize → resolver normalize: full v1 ad carousel round-trip', (
   assert.ok(media.items[1].url.endsWith('vid-1080.mp4?sig=2'));
 });
 
+// ---- network tap cache + payload scanners (inject.js) ----------------------
+// The 2026 feed keeps post data in the Relay store (fiber props are empty) and /p/ embeds are
+// cover-only — the network tap is the primary carousel source. Verified live 2026-07-13 on an
+// 8-slide carousel (DYw5KdMDH6a): web_info returned 1 item, fiber graph had zero media props.
+
+t('parseJsonChunks: whole body, @defer newline-delimited chunks, garbage lines', () => {
+  assert.equal(I.parseJsonChunks('{"a":1}').length, 1);
+  const chunks = I.parseJsonChunks('{"a":1}\n{"b":{"c":2}}\nnot json\n');
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[1].b.c, 2);
+  assert.deepEqual(I.parseJsonChunks(''), []);
+});
+
+t('collectMedia: digs through require/__bbox wrappers and deep timeline nesting', () => {
+  const timeline = {
+    require: [['RelayPrefetchedStreamCache', 'next', [], ['q', {
+      __bbox: { result: { data: { xdt_api__v1__feed__timeline_connection: { edges: [
+        { node: { media_or_ad: { media: AD_CAROUSEL } } },
+        { node: { media: API_V1_VIDEO } },
+      ] } } } },
+    }]]],
+  };
+  const got = [];
+  assert.equal(I.collectMedia(timeline, (m) => got.push(m), { ms: 2000 }), true);
+  const codes = got.map((m) => m.code);
+  assert.ok(codes.includes('CadPost1234'), 'ad carousel harvested');
+  assert.ok(codes.includes('Cre3lC0de99'), 'plain video harvested');
+});
+
+t('collectMedia: node budget aborts (returns false) without hanging', () => {
+  const wide = { arr: Array.from({ length: 5000 }, (_, i) => ({ i })) };
+  assert.equal(I.collectMedia(wide, () => {}, { ms: 2000, nodes: 50 }), false);
+});
+
+t('cachePut: richer version of the same code wins regardless of arrival order', () => {
+  const coverOnly = {
+    code: 'DYw5KdMDH6a',
+    carousel_media_count: 8,
+    image_versions2: API_V1_IMAGE.image_versions2,
+  };
+  const full = { code: 'DYw5KdMDH6a', carousel_media: [API_V1_IMAGE, API_V1_VIDEO, API_V1_IMAGE] };
+  I.cachePut(coverOnly);
+  assert.equal(I._mediaCache.get('DYw5KdMDH6a'), coverOnly);
+  I.cachePut(full);
+  assert.equal(I._mediaCache.get('DYw5KdMDH6a'), full);
+  I.cachePut(coverOnly); // downgrade refused
+  assert.equal(I._mediaCache.get('DYw5KdMDH6a'), full);
+  I._mediaCache.clear();
+});
+
+// ---- cover-only embeds + partial carousels (resolver) -----------------------
+
+const jblob = (o) => '<script type="application/json">' + JSON.stringify(o) + '</scri' + 'pt>';
+const webInfo = (item) => ({ data: { xdt_api__v1__media__shortcode__web_info: { items: [item] } } });
+const COVER_ONLY = {
+  code: 'DYw5KdMDH6a',
+  user: { username: 'linha.zero' },
+  carousel_media_count: 8,
+  image_versions2: { candidates: [{ url: 'https://cdn.example/cover.jpg', width: 1080 }] },
+};
+const EIGHT_CHILDREN = Array.from({ length: 8 }, (_, i) => ({
+  image_versions2: { candidates: [{ url: `https://cdn.example/slide-${i + 1}.jpg`, width: 1080 }] },
+}));
+
+t('normalize: carousel_media_count without children yields expectedCount (partial marker)', () => {
+  const m = R.normalizeApiV1Item(COVER_ONLY);
+  assert.equal(m.items.length, 1);
+  assert.equal(m.expectedCount, 8);
+});
+
+t('pickMediaFromHtml: cover-only embed alone returns the partial candidate', () => {
+  const m = R.pickMediaFromHtml('<html>' + jblob(webInfo(COVER_ONLY)) + '</html>', 'DYw5KdMDH6a');
+  assert.equal(m.items.length, 1);
+  assert.equal(m.expectedCount, 8);
+});
+
+t('pickMediaFromHtml: a later full-carousel blob beats the cover-only embed', () => {
+  const full = Object.assign({}, COVER_ONLY, { carousel_media: EIGHT_CHILDREN });
+  const html = '<html>' + jblob(webInfo(COVER_ONLY)) + jblob(webInfo(full)) + '</html>';
+  const m = R.pickMediaFromHtml(html, 'DYw5KdMDH6a');
+  assert.equal(m.items.length, 8);
+});
+
+t('pickMediaFromHtml: bare deferred carousel_media chunk adopted + username backfilled', () => {
+  const deferred = { label: 'q$defer$children', path: ['items', 0], data: { carousel_media: EIGHT_CHILDREN } };
+  const html = '<html>' + jblob(webInfo(COVER_ONLY)) + jblob(deferred) + '</html>';
+  const m = R.pickMediaFromHtml(html, 'DYw5KdMDH6a');
+  assert.equal(m.items.length, 8);
+  assert.equal(m.shortcode, 'DYw5KdMDH6a');
+  assert.equal(m.username, 'linha.zero');
+});
+
+t('pickMediaFromHtml: richer candidates for OTHER posts lose to the target shortcode', () => {
+  const other = Object.assign({}, COVER_ONLY, { code: 'OtherPost99', carousel_media: EIGHT_CHILDREN });
+  const html = '<html>' + jblob(webInfo(other)) + jblob(webInfo(COVER_ONLY)) + '</html>';
+  const m = R.pickMediaFromHtml(html, 'DYw5KdMDH6a');
+  assert.equal(m.shortcode, 'DYw5KdMDH6a');
+  assert.equal(m.items.length, 1);
+});
+
 // ---- summary ---------------------------------------------------------------
 
 console.log('\n' + passed + ' passed, ' + failed.length + ' failed');

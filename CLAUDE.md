@@ -48,24 +48,32 @@ extension/
   content.js       button injection + delegated click flow (all IG-DOM heuristics live here)
   content.css      button/toast styles
   background.js    thin SW: chrome.downloads only
-  inject.js        React Fiber media extractor (MAIN world, standalone; exports for Node tests)
-test/run-tests.cjs Node tests: resolver's pure half + the fiber search engine
+  inject.js        in-page media resolver (MAIN world, standalone): fetch/XHR tap → embedded
+                   JSON scan → fiber walk; exports for Node tests
+test/run-tests.cjs Node tests: resolver's pure half + the in-page resolver engines
 ```
 
-Flow: click → shortcode (container links, else URL) → `fetchMediaByShortcode`:
+Flow: click → shortcode (container links, else URL; may be null for ads) → chain, first
+non-partial hit wins:
 
-1. **React Fiber extraction** — mark the container with `data-igfm-req`, send
-   `igfm-request-react` (JSON-string detail) to MAIN-world `inject.js`, which climbs
-   `fiber.return` ancestors (then a budgeted BFS) for a props/hook object matching the
-   shortcode, and returns the raw media JSON. The only path that works for sponsored/ad posts
-   and private-account carousels; also tolerates ads with no permalink (shortcode optional).
-2. **Post-page HTML embed** — fetch `/p/<shortcode>/` with session cookies; parse
-   `<script type="application/json">` blobs for `xdt_api__v1__media__shortcode__web_info` / `shortcode_media`.
-   Primary because it covers image/video/carousel in one shape regardless of how the post is
-   being viewed.
+1. **In-page resolution (MAIN-world `inject.js`)** — content.js marks the container with
+   `data-igfm-req` and sends `igfm-request-react` (JSON-string detail); inject.js answers from
+   (a) its **network-response cache** — a `window.fetch`/XHR tap on `/graphql/query` +
+   `/api/v1/` installed at document_start (in-memory LRU keyed by shortcode, never persisted),
+   (b) a lazy scan of server-embedded `<script type="application/json">` blobs, then
+   (c) the **fiber walk** — `fiber.return` ancestors first, budgeted BFS second, exact
+   shortcode match, hooks included (still needed for surfaces with fat props / ads with no
+   permalink). This is the PRIMARY source for feed + sponsored carousels: the 2026 feed keeps
+   post data in the Relay store, not fiber props, and `/p/` embeds are cover-only (both
+   verified live 2026-07-13).
+2. **Post-page HTML embed** — fetch `/p/<shortcode>/` with session cookies; pick the RICHEST
+   candidate across ALL JSON blobs (`pickMediaFromHtml`): the first `web_info` may be
+   cover-only with `carousel_media_count` declared while a deferred chunk carries the
+   children. A partial carousel (`expectedCount > items.length`) is not accepted as final.
 3. **GraphQL `doc_id` query** — POST `/graphql/query` (`X-IG-App-ID` + csrf cookie) →
-   `xdt_shortcode_media`.
-4. **DOM harvest** — largest `srcset` candidates in the clicked container; images only; last resort.
+   `xdt_shortcode_media`; also fired when #2 came back partial — the richer result wins.
+4. **DOM harvest** — largest `srcset` candidates in the clicked container; images only; last
+   resort (a carousel only has 3–4 slides mounted at any instant).
 
 Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloads`
 (`conflictAction: 'uniquify'`).
@@ -113,12 +121,21 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     worlds, JS heaps are not. Raw media returns as sanitized JSON; the content script
     normalizes it (`inject.js` is standalone — resolver.js no longer loads in MAIN). Debug
     handle in the page console: `window.IGFM_INJECT`.
+13. **A cover-only carousel is a data-routing problem, not a fiber-tuning problem.** Verified
+    live 2026-07-13 on an 8-slide carousel (`DYw5KdMDH6a`): fiber graph = 2660 fibers, ZERO
+    media props (Relay-store era); `/p/<code>/` = HTTP 200 with only the cover +
+    `carousel_media_count: 8`. The full `carousel_media` reaches the client ONLY in network
+    responses (timeline/modal GraphQL, sometimes @defer newline-chunked — parse per line).
+    Capture at the network layer (fetch/XHR tap). Do NOT "fix" this by programmatically
+    walking the carousel DOM — images-only, 3–4 mounted slides, violates resolution-from-data.
+    Consequence: after (re)loading the extension the Instagram TAB must be reloaded too, or
+    the tap misses the feed responses.
 
 ## Validate / test
 
 ```bash
 node --check extension/*.js
-node test/run-tests.cjs        # 32 tests: pure resolver half + fiber search engine
+node test/run-tests.cjs        # 41 tests: pure resolver half + in-page resolver engines
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
