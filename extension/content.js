@@ -114,6 +114,23 @@ function toast(text, kind = '') {
   toast._t = setTimeout(() => el.classList.remove('igfm-show'), 4500);
 }
 
+function fetchMediaFromReact(shortcode) {
+  return new Promise((resolve) => {
+    const onResponse = (e) => {
+      if (e.detail.shortcode === shortcode) {
+        document.removeEventListener('igfm-response-react', onResponse);
+        resolve(e.detail.media);
+      }
+    };
+    document.addEventListener('igfm-response-react', onResponse);
+    setTimeout(() => {
+      document.removeEventListener('igfm-response-react', onResponse);
+      resolve(null);
+    }, 1500);
+    document.dispatchEvent(new CustomEvent('igfm-request-react', { detail: { shortcode } }));
+  });
+}
+
 async function runDownload(btn) {
   if (btn.dataset.busy) return;
   // Resolve at CLICK time from the button's current container — on SPA navigation a permalink
@@ -131,13 +148,25 @@ async function runDownload(btn) {
   try {
     let media;
     let notice = '';
+
+    // First attempt: extract directly from local React state (instant, works for ads & private accounts)
     try {
-      media = await R.fetchMediaByShortcode(shortcode);
+      media = await fetchMediaFromReact(shortcode);
     } catch (e) {
-      console.warn('[IGFM] API resolution failed, trying DOM fallback:', (e && e.message) || e);
-      media = R.mediaFromDom(container, shortcode);
-      notice = ' — DOM fallback, images only';
+      console.warn('[IGFM] React Fiber extraction failed:', e);
     }
+
+    // Second attempt: fetch from the Instagram API/HTML
+    if (!media) {
+      try {
+        media = await R.fetchMediaByShortcode(shortcode);
+      } catch (e) {
+        console.warn('[IGFM] API resolution failed, trying DOM fallback:', (e && e.message) || e);
+        media = R.mediaFromDom(container, shortcode);
+        notice = ' — DOM fallback, images only';
+      }
+    }
+
     if (!media) throw new Error('no downloadable media found');
     const items = R.planDownloads(media);
     console.log(`[IGFM] media resolved via ${media.source}:`, items);

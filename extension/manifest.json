@@ -13,6 +13,12 @@
       "js": ["resolver.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["resolver.js", "inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }
