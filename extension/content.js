@@ -114,20 +114,64 @@ function toast(text, kind = '') {
   toast._t = setTimeout(() => el.classList.remove('igfm-show'), 4500);
 }
 
-function fetchMediaFromReact(shortcode) {
+// Ask the MAIN-world inject.js to pull this post's media object out of React fiber memory.
+// Details are JSON STRINGS both ways (object details don't reliably cross Chrome's isolated/
+// MAIN world boundary); the container is handed over via a data-igfm-req attribute because the
+// DOM is shared across worlds even though JS objects are not. The raw media object comes back
+// as plain JSON and is normalized HERE (inject.js has no resolver).
+function fetchMediaFromReact(container, shortcode) {
   return new Promise((resolve) => {
-    const onResponse = (e) => {
-      if (e.detail.shortcode === shortcode) {
-        document.removeEventListener('igfm-response-react', onResponse);
-        resolve(e.detail.media);
+    const reqId = 'igfm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    let done = false;
+    const finish = (media) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('igfm-response-react', onResponse);
+      clearTimeout(timer);
+      try {
+        container.removeAttribute('data-igfm-req');
+      } catch {
+        // container may be `document` or already gone
       }
+      resolve(media);
+    };
+    const onResponse = (e) => {
+      let d = e && e.detail;
+      if (typeof d === 'string') {
+        try {
+          d = JSON.parse(d);
+        } catch {
+          d = null;
+        }
+      }
+      if (!d || d.reqId !== reqId) return;
+      if (d.error) console.warn('[IGFM] fiber extraction reported:', d.error, d.stats || '');
+      else console.log('[IGFM] fiber extraction stats:', d.via || '', d.stats || '');
+      if (!d.media) return finish(null);
+      let media = null;
+      try {
+        media = R.normalizeShortcodeMedia(d.media) || R.normalizeApiV1Item(d.media);
+      } catch (err) {
+        console.warn('[IGFM] fiber media normalization failed:', err);
+      }
+      if (media) {
+        media.source = 'react_fiber';
+        if (!media.shortcode) media.shortcode = shortcode || null;
+      }
+      finish(media);
     };
     document.addEventListener('igfm-response-react', onResponse);
-    setTimeout(() => {
-      document.removeEventListener('igfm-response-react', onResponse);
-      resolve(null);
-    }, 1500);
-    document.dispatchEvent(new CustomEvent('igfm-request-react', { detail: { shortcode } }));
+    const timer = setTimeout(() => finish(null), 1600);
+    try {
+      container.setAttribute('data-igfm-req', reqId);
+    } catch {
+      // non-element container — inject.js will fall back to a shortcode search
+    }
+    document.dispatchEvent(
+      new CustomEvent('igfm-request-react', {
+        detail: JSON.stringify({ reqId, shortcode: shortcode || null }),
+      }),
+    );
   });
 }
 
@@ -136,35 +180,38 @@ async function runDownload(btn) {
   // Resolve at CLICK time from the button's current container — on SPA navigation a permalink
   // <main> persists across posts, so anything captured at inject time can go stale.
   const container = btn.closest('article, div[role="dialog"], main') || document;
+  // May be null: some sponsored posts carry no /p/ permalink — the fiber path still works
+  // (it matches by container, and the found media object brings its own code).
   const shortcode = findShortcode(container);
-  if (!shortcode) {
-    toast('Could not find the post link (shortcode)', 'err');
-    return;
-  }
-  console.log('[IGFM] button clicked — shortcode', shortcode);
+  console.log('[IGFM] button clicked — shortcode', shortcode || '(none — sponsored post?)');
   btn.dataset.busy = '1';
   btn.classList.add('igfm-loading');
   toast('Resolving post media…');
   try {
-    let media;
+    let media = null;
     let notice = '';
 
-    // First attempt: extract directly from local React state (instant, works for ads & private accounts)
+    // First attempt: extract directly from React fiber memory (instant, no network; the only
+    // path that works for sponsored/ad posts and private-account carousels).
     try {
-      media = await fetchMediaFromReact(shortcode);
+      media = await fetchMediaFromReact(container, shortcode);
     } catch (e) {
       console.warn('[IGFM] React Fiber extraction failed:', e);
     }
 
-    // Second attempt: fetch from the Instagram API/HTML
-    if (!media) {
+    // Second attempt: fetch from the Instagram API/HTML (needs a shortcode).
+    if (!media && shortcode) {
       try {
         media = await R.fetchMediaByShortcode(shortcode);
       } catch (e) {
         console.warn('[IGFM] API resolution failed, trying DOM fallback:', (e && e.message) || e);
-        media = R.mediaFromDom(container, shortcode);
-        notice = ' — DOM fallback, images only';
       }
+    }
+
+    // Last resort: harvest rendered images from the clicked container.
+    if (!media) {
+      media = R.mediaFromDom(container, shortcode);
+      if (media) notice = ' — DOM fallback, images only';
     }
 
     if (!media) throw new Error('no downloadable media found');

@@ -276,6 +276,135 @@ t('unsafe username characters sanitized, empty falls back to instagram/post', ()
   assert.equal(anon[0].filename, 'instagram-captures/instagram-C9XyZ12abcd.jpg');
 });
 
+// ---- fiber extraction engine (extension/inject.js) -------------------------
+// inject.js is a MAIN-world browser script, but its search core is pure — it exports itself
+// under Node so the traversal contract (ancestor-first, exact-shortcode, budgets) is testable
+// without a browser. Synthetic fibers mimic React's {memoizedProps, return, child, sibling}.
+
+const I = require('../extension/inject.js');
+
+const AD_CAROUSEL = {
+  code: 'CadPost1234',
+  user: { username: 'sponsored.brand' },
+  carousel_media: [API_V1_IMAGE, API_V1_VIDEO],
+};
+
+function makeFiber(props, extra) {
+  return Object.assign(
+    { memoizedProps: props || null, pendingProps: props || null, memoizedState: null,
+      return: null, child: null, sibling: null, alternate: null, type: { name: 'Comp' } },
+    extra || {},
+  );
+}
+
+t('fiber: media found on an ancestor, nested two levels deep in props', () => {
+  const host = makeFiber({ className: 'x' }, { type: 'div' });
+  const mid = makeFiber({});
+  const post = makeFiber({ item: { media: AD_CAROUSEL } }, { type: { name: 'PostRoot' } });
+  host.return = mid;
+  mid.return = post;
+  const r = I.findMediaFromFiberGraph([host], 'CadPost1234', I.makeState(500, 20000));
+  assert.equal(r.media, AD_CAROUSEL);
+  assert.equal(r.via, 'ancestors:PostRoot');
+});
+
+t('fiber: exact mode rejects an object whose code differs from the shortcode', () => {
+  const host = makeFiber({ post: AD_CAROUSEL });
+  const r = I.findMediaFromFiberGraph([host], 'OtherCode99', I.makeState(500, 20000));
+  assert.equal(r.media, null);
+});
+
+t('fiber: generic mode (no shortcode — ad without permalink) finds ancestor media', () => {
+  const host = makeFiber({ className: 'x' });
+  const post = makeFiber({ media: AD_CAROUSEL });
+  host.return = post;
+  const r = I.findMediaFromFiberGraph([host], null, I.makeState(500, 20000));
+  assert.equal(r.media, AD_CAROUSEL);
+});
+
+t('fiber: generic mode never enters arrays (feed lists hold other posts)', () => {
+  const host = makeFiber({ className: 'x' });
+  const feed = makeFiber({ items: [AD_CAROUSEL] });
+  host.return = feed;
+  assert.equal(I.findMediaFromFiberGraph([host], null, I.makeState(500, 20000)).media, null);
+  // …but exact mode may, since only a code match is accepted
+  const r = I.findMediaFromFiberGraph([host], 'CadPost1234', I.makeState(500, 20000));
+  assert.equal(r.media, AD_CAROUSEL);
+});
+
+t('fiber: media held in a function component hook chain', () => {
+  const hook2 = { memoizedState: { post: AD_CAROUSEL }, next: null };
+  const hook1 = { memoizedState: 42, next: hook2 };
+  const host = makeFiber({ className: 'x' }, { memoizedState: hook1 });
+  const r = I.findMediaFromFiberGraph([host], 'CadPost1234', I.makeState(500, 20000));
+  assert.equal(r.media, AD_CAROUSEL);
+});
+
+t('fiber: BFS phase reaches media on a cousin branch when ancestors have none', () => {
+  const start = makeFiber({ className: 'x' });
+  const parent = makeFiber({});
+  const cousin = makeFiber({ media: AD_CAROUSEL }, { type: { name: 'Sidecar' } });
+  start.return = parent;
+  parent.child = start;
+  start.sibling = cousin;
+  const r = I.findMediaFromFiberGraph([start], 'CadPost1234', I.makeState(500, 20000));
+  assert.equal(r.media, AD_CAROUSEL);
+  assert.ok(r.via.startsWith('graph:'));
+});
+
+t('fiber: circular fibers + circular props terminate without hanging', () => {
+  const a = makeFiber(null);
+  const b = makeFiber(null);
+  a.return = b;
+  b.return = a; // fiber cycle
+  const loopProps = { name: 'loop' };
+  loopProps.self = loopProps; // data cycle
+  a.memoizedProps = loopProps;
+  const state = I.makeState(500, 20000);
+  assert.equal(I.findMediaFromFiberGraph([a], 'CadPost1234', state).media, null);
+  assert.ok(state.fibersVisited > 0);
+});
+
+t('fiber: exhausted budget aborts the search instead of crashing the page', () => {
+  const post = makeFiber({ media: AD_CAROUSEL });
+  const state = I.makeState(500, 0); // zero property budget
+  assert.equal(I.findMediaFromFiberGraph([post], 'CadPost1234', state).media, null);
+});
+
+t('fiber: react internals (child/return/stateNode/_keys/$$typeof) are never entered', () => {
+  const decoy = makeFiber({
+    child: { post: AD_CAROUSEL },        // SKIP_KEYS
+    _private: { post: AD_CAROUSEL },     // underscore
+    el: { $$typeof: Symbol ? Symbol.for('react.element') : 1, props: { post: AD_CAROUSEL } },
+  });
+  assert.equal(I.findMediaFromFiberGraph([decoy], 'CadPost1234', I.makeState(500, 20000)).media, null);
+});
+
+t('safeJsonStringify: strips functions, cycles and elements; keeps media data intact', () => {
+  const raw = Object.assign({}, AD_CAROUSEL, {
+    onClick: () => {},
+    __typename: 'XDTMediaDict',
+    element: { $$typeof: 1, huge: {} },
+  });
+  raw.selfRef = raw;
+  const parsed = JSON.parse(I.safeJsonStringify(raw));
+  assert.equal(parsed.code, 'CadPost1234');
+  assert.equal(parsed.carousel_media.length, 2);
+  assert.equal(parsed.onClick, undefined);
+  assert.equal(parsed.__typename, undefined);
+  assert.equal(parsed.element, undefined);
+  assert.equal(parsed.selfRef, undefined);
+});
+
+t('fiber → sanitize → resolver normalize: full v1 ad carousel round-trip', () => {
+  const parsed = JSON.parse(I.safeJsonStringify(AD_CAROUSEL));
+  const media = R.normalizeShortcodeMedia(parsed) || R.normalizeApiV1Item(parsed);
+  assert.equal(media.shortcode, 'CadPost1234');
+  assert.equal(media.username, 'sponsored.brand');
+  assert.deepEqual(media.items.map((i) => i.type), ['image', 'video']);
+  assert.ok(media.items[1].url.endsWith('vid-1080.mp4?sig=2'));
+});
+
 // ---- summary ---------------------------------------------------------------
 
 console.log('\n' + passed + ' passed, ' + failed.length + ' failed');

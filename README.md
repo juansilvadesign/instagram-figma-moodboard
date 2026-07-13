@@ -38,6 +38,10 @@ as **verified** when, in a logged-in Chrome:
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
+- [ ] **Sponsored/ad post — carousel** → ALL slides land; page console shows
+      `[IGFM-Inject] media found via ancestors:…` and `[IGFM] media resolved via react_fiber`
+- [ ] Regular posts resolve via `react_fiber` (instant) or fall back to `web_info` — check the
+      `[IGFM] media resolved via …` console line; no click may freeze the page (>0.5 s jank)
 - [ ] Button survives scrolling far down the feed and back (React re-renders)
 - [ ] Service-worker console (`chrome://extensions` → Inspect views) shows `[IGFM]` trace, no errors
 
@@ -48,15 +52,17 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # pure resolver: parsers, normalizers, filename plan — 19 tests
+node test/run-tests.cjs   # resolver (parsers, normalizers, filename plan) + fiber search engine — 32 tests
 node --check extension/*.js
 ```
 
 ## How it resolves media (short version)
 
-Shortcode from the post's links (or the URL) → fetch `/p/<shortcode>/` with the session's cookies
-and parse Instagram's own embedded JSON (`xdt_api__v1__media__shortcode__web_info`) → fallback to
-the GraphQL `doc_id` query → last-resort DOM `srcset` harvest (images only). Media URLs are direct
+Shortcode from the post's links (or the URL) → pull the media object straight out of React
+fiber memory (MAIN-world `inject.js`; the only path that works for sponsored/ad posts) → fetch
+`/p/<shortcode>/` with the session's cookies and parse Instagram's own embedded JSON
+(`xdt_api__v1__media__shortcode__web_info`) → fallback to the GraphQL `doc_id` query →
+last-resort DOM `srcset` harvest (images only). Media URLs are direct
 CDN files (signed), saved by the service worker via `chrome.downloads`. Details + failure modes:
 [`CLAUDE.md`](CLAUDE.md) → Architecture / Gotchas.
 

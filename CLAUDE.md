@@ -48,13 +48,17 @@ extension/
   content.js       button injection + delegated click flow (all IG-DOM heuristics live here)
   content.css      button/toast styles
   background.js    thin SW: chrome.downloads only
-  inject.js        React Fiber media extractor (runs in MAIN world)
-test/run-tests.cjs Node tests for resolver's pure half
+  inject.js        React Fiber media extractor (MAIN world, standalone; exports for Node tests)
+test/run-tests.cjs Node tests: resolver's pure half + the fiber search engine
 ```
 
 Flow: click → shortcode (container links, else URL) → `fetchMediaByShortcode`:
 
-1. **React Fiber extraction** — query MAIN world `inject.js` via DOM events (`igfm-request-react`) to extract the media object directly from React memory (memoizedProps). Works for sponsored/ad posts and private account carousels.
+1. **React Fiber extraction** — mark the container with `data-igfm-req`, send
+   `igfm-request-react` (JSON-string detail) to MAIN-world `inject.js`, which climbs
+   `fiber.return` ancestors (then a budgeted BFS) for a props/hook object matching the
+   shortcode, and returns the raw media JSON. The only path that works for sponsored/ad posts
+   and private-account carousels; also tolerates ads with no permalink (shortcode optional).
 2. **Post-page HTML embed** — fetch `/p/<shortcode>/` with session cookies; parse
    `<script type="application/json">` blobs for `xdt_api__v1__media__shortcode__web_info` / `shortcode_media`.
    Primary because it covers image/video/carousel in one shape regardless of how the post is
@@ -94,14 +98,27 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
 10. **Append the button to the action-bar section's END, never into its first svg-bearing child**
     — each action sits in its own span, so "first child with an svg" = *inside the Like button*
     (bit us 2026-07-08). The section is the flex row; appending to it lands right of Save.
-11. **React Fiber props recursion depth**: Traversing fiber props recursively without depth limits can lead to infinite loops/stack overflows on React components containing circular references. Limit property inspection to depth 1 (e.g. `obj.post`, `obj.media`) and cap visited fiber nodes at 500.
-12. **MAIN world script injection**: To access React fibers (`__reactFiber$`), scripts must run in the `MAIN` world (page context). Communicating back to `ISOLATED` world content script is done via Custom DOM Events (`igfm-request-react` and `igfm-response-react`).
+11. **Fiber traversal direction: the post's data props live on ANCESTOR component fibers** of
+    the `<article>` host fiber — climb `fiber.return` first (tens of hops), and only then BFS
+    the local graph. A downward `child`/`sibling` DFS capped at a few hundred nodes starves in
+    the header subtree and finds nothing (the 2026-07-13 bug: 4 fix attempts searched the wrong
+    direction). Guard with a time deadline + property budget + visited sets — not tiny node
+    caps — and, when the shortcode is known, accept only an object whose `code`/`shortcode`
+    EQUALS it so deep searches can't return a neighboring post. Generic (no-shortcode) matching
+    is allowed only on the ancestor chain and never enters arrays (feed lists hold other posts).
+12. **MAIN↔ISOLATED bridge**: React fibers (`__reactFiber$`) are only visible in the `MAIN`
+    world. CustomEvent details must be JSON **strings** (primitives cross every Chrome's world
+    boundary; object details depend on structured-clone behavior and can arrive null). The
+    target container is handed over via a `data-igfm-req` attribute — DOM is shared across
+    worlds, JS heaps are not. Raw media returns as sanitized JSON; the content script
+    normalizes it (`inject.js` is standalone — resolver.js no longer loads in MAIN). Debug
+    handle in the page console: `window.IGFM_INJECT`.
 
 ## Validate / test
 
 ```bash
 node --check extension/*.js
-node test/run-tests.cjs        # 19 tests over the pure resolver half
+node test/run-tests.cjs        # 32 tests: pure resolver half + fiber search engine
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
