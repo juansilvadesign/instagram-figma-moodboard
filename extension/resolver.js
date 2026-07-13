@@ -71,14 +71,24 @@ const IGFM_RESOLVER = (() => {
         const i = largest(candidates, (x) => x.width || 0);
         return { type: 'image', url: i.url, width: i.width || 0 };
       }
-      return null;
+      // fallback to graphql fields just in case they are mixed
+      if (m.is_video && m.video_url) {
+        return { type: 'video', url: m.video_url, width: (m.dimensions && m.dimensions.width) || 0 };
+      }
+      const r = largest(m.display_resources, (x) => x.config_width || 0);
+      const url = (r && r.src) || m.display_url;
+      return url ? { type: 'image', url, width: (r && r.config_width) || 0 } : null;
     };
-    const leaves = item.carousel_media && item.carousel_media.length ? item.carousel_media : [item];
+    const leaves = item.carousel_media && item.carousel_media.length
+      ? item.carousel_media
+      : (item.edge_sidecar_to_children && item.edge_sidecar_to_children.edges
+        ? item.edge_sidecar_to_children.edges.map((e) => e.node)
+        : [item]);
     const items = leaves.map(leaf).filter(Boolean);
     if (!items.length) return null;
     return {
-      username: (item.user && item.user.username) || null,
-      shortcode: item.code || null,
+      username: (item.user && item.user.username) || (item.owner && item.owner.username) || null,
+      shortcode: item.code || item.shortcode || null,
       items,
       source: 'web_info',
     };
@@ -88,6 +98,17 @@ const IGFM_RESOLVER = (() => {
   function normalizeShortcodeMedia(media) {
     if (!media) return null;
     const leaf = (n) => {
+      // support api/v1 style version keys if they are mixed into graphql nodes
+      if (n.video_versions && n.video_versions.length) {
+        const v = largest(n.video_versions, (x) => x.width || 0);
+        return { type: 'video', url: v.url, width: v.width || 0 };
+      }
+      const candidates = n.image_versions2 && n.image_versions2.candidates;
+      if (candidates && candidates.length) {
+        const i = largest(candidates, (x) => x.width || 0);
+        return { type: 'image', url: i.url, width: i.width || 0 };
+      }
+      // standard graphql fields
       if (n.is_video && n.video_url) {
         return { type: 'video', url: n.video_url, width: (n.dimensions && n.dimensions.width) || 0 };
       }
@@ -96,12 +117,14 @@ const IGFM_RESOLVER = (() => {
       return url ? { type: 'image', url, width: (r && r.config_width) || 0 } : null;
     };
     const edges = media.edge_sidecar_to_children && media.edge_sidecar_to_children.edges;
-    const nodes = edges && edges.length ? edges.map((e) => e.node) : [media];
+    const nodes = edges && edges.length
+      ? edges.map((e) => e.node)
+      : (media.carousel_media && media.carousel_media.length ? media.carousel_media : [media]);
     const items = nodes.map(leaf).filter(Boolean);
     if (!items.length) return null;
     return {
-      username: (media.owner && media.owner.username) || null,
-      shortcode: media.shortcode || null,
+      username: (media.owner && media.owner.username) || (media.user && media.user.username) || null,
+      shortcode: media.shortcode || media.code || null,
       items,
       source: 'graphql',
     };
@@ -155,7 +178,8 @@ const IGFM_RESOLVER = (() => {
     }
     // some renders embed the GraphQL shape instead
     for (const blob of blobs) {
-      const media = normalizeShortcodeMedia(deepFind(blob, 'xdt_shortcode_media'));
+      const gMedia = deepFind(blob, 'xdt_shortcode_media') || deepFind(blob, 'shortcode_media');
+      const media = normalizeShortcodeMedia(gMedia);
       if (media) return media;
     }
     throw new Error('no media JSON in post page HTML (login wall or markup change?)');

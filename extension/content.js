@@ -32,14 +32,26 @@ function findShortcode(container) {
   return R.shortcodeFromUrl(location.pathname);
 }
 
-const hasPostMedia = (container) => !!container.querySelector('video, img[srcset]');
+const hasPostMedia = (container) => !!container.querySelector('video, img');
 
 // Action bar = innermost <section> holding ≥2 aria-labelled svg icons (like/comment/share/save
 // in any locale) and no comment form. The form check also rejects page-level wrapper sections.
 function findActionBar(container) {
-  const matches = [...container.querySelectorAll('section')].filter(
-    (s) => !s.querySelector('textarea, form') && s.querySelectorAll('svg[aria-label]').length >= 2,
-  );
+  const matches = [...container.querySelectorAll('section')].filter((s) => {
+    if (s.querySelector('textarea, form')) return false;
+    let labeledSvgs = 0;
+    for (const svg of s.querySelectorAll('svg')) {
+      let curr = svg;
+      while (curr && curr !== s) {
+        if (curr.hasAttribute('aria-label')) {
+          labeledSvgs++;
+          break;
+        }
+        curr = curr.parentElement;
+      }
+    }
+    return labeledSvgs >= 2;
+  });
   return matches.find((s) => !matches.some((o) => o !== s && s.contains(o))) || null;
 }
 

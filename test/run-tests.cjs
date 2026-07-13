@@ -180,6 +180,48 @@ t('graphql image falls back to display_url without display_resources', () => {
   assert.equal(m.items[0].url, 'https://cdn.example/only.jpg');
 });
 
+t('graphql sidecar with carousel_media instead of edge_sidecar_to_children', () => {
+  const m = R.normalizeShortcodeMedia({
+    shortcode: 'Ccarousel99',
+    owner: { username: 'studio' },
+    carousel_media: [
+      {
+        image_versions2: { candidates: [{ url: 'https://cdn.example/img.jpg', width: 640 }] }
+      },
+      {
+        is_video: true,
+        video_url: 'https://cdn.example/vid.mp4',
+        dimensions: { width: 720 }
+      }
+    ]
+  });
+  assert.equal(m.items.length, 2);
+  assert.equal(m.items[0].type, 'image');
+  assert.equal(m.items[0].url, 'https://cdn.example/img.jpg');
+  assert.equal(m.items[1].type, 'video');
+  assert.equal(m.items[1].url, 'https://cdn.example/vid.mp4');
+});
+
+t('api/v1 item with edge_sidecar_to_children instead of carousel_media', () => {
+  const m = R.normalizeApiV1Item({
+    code: 'Ccarousel99',
+    user: { username: 'studio' },
+    edge_sidecar_to_children: {
+      edges: [
+        {
+          node: {
+            display_url: 'https://cdn.example/img.jpg',
+            display_resources: [{ src: 'https://cdn.example/img.jpg', config_width: 640 }]
+          }
+        }
+      ]
+    }
+  });
+  assert.equal(m.items.length, 1);
+  assert.equal(m.items[0].type, 'image');
+  assert.equal(m.items[0].url, 'https://cdn.example/img.jpg');
+});
+
 // ---- planDownloads ---------------------------------------------------------
 
 t('single item: no index suffix, username lowercased, shortcode case preserved', () => {
