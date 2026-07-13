@@ -3,22 +3,17 @@
 
 (() => {
   function findFiberNode(container) {
+    if (!container) return null;
     const key = Object.keys(container).find(
       (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
     );
     if (key && container[key]) return container[key];
     
-    // check popular inner class selectors
-    const el = container.querySelector('[class*="React"], [class*="react"], div');
-    if (el) {
-      const childKey = Object.keys(el).find(
-        (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
-      );
-      if (childKey && el[childKey]) return el[childKey];
-    }
-    
-    // search all descendants
-    for (const descendant of container.querySelectorAll('*')) {
+    // search descendants up to a safe limit to prevent hangs on large documents
+    const descendants = container.querySelectorAll('*');
+    const limit = Math.min(descendants.length, 150);
+    for (let i = 0; i < limit; i++) {
+      const descendant = descendants[i];
       const k = Object.keys(descendant).find(
         (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')
       );
@@ -37,17 +32,19 @@
       }
     }
 
+    // Inspect child properties at depth 1 only (no deep recursion into props to avoid circular loops)
     for (const k in obj) {
+      if (k.startsWith('__react') || k === '_owner' || k === 'stateNode' || k === 'child' || k === 'sibling' || k === 'return') {
+        continue;
+      }
       try {
         const val = obj[k];
-        if (val && typeof val === 'object') {
-          if (k === 'media' || k === 'post' || k === 'item' || k === 'publication') {
+        if (val && typeof val === 'object' && !visited.has(val)) {
+          if (val.shortcode || val.code) {
             if (val.carousel_media || val.edge_sidecar_to_children || val.video_versions || val.image_versions2 || val.display_resources) {
               return val;
             }
           }
-          const found = searchProps(val, visited);
-          if (found) return found;
         }
       } catch {
         // ignore security/access errors
@@ -57,7 +54,8 @@
   }
 
   function findMediaInFiber(node, visited = new Set()) {
-    if (!node || visited.has(node)) return null;
+    // Limit visited nodes to 500 to prevent performance lag or stack overflows
+    if (!node || visited.has(node) || visited.size > 500) return null;
     visited.add(node);
 
     for (const propsKey of ['memoizedProps', 'pendingProps']) {
@@ -105,12 +103,9 @@
         container = main;
       }
     }
-    if (!container) {
-      container = document;
-    }
 
     try {
-      const fiber = findFiberNode(container);
+      const fiber = container ? findFiberNode(container) : null;
       const rawMedia = fiber ? findMediaInFiber(fiber) : null;
       let media = null;
       if (rawMedia) {
