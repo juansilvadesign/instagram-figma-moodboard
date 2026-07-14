@@ -200,7 +200,8 @@ async function runDownload(btn) {
   // May be null: some sponsored posts carry no /p/ permalink — the fiber path still works
   // (it matches by container, and the found media object brings its own code).
   const shortcode = findShortcode(container);
-  console.log('[IGFM] button clicked — shortcode', shortcode || '(none — sponsored post?)');
+  // single-string log (not multi-arg) so console-scraping tools capture the shortcode reliably
+  console.log(`[IGFM] button clicked — shortcode=${shortcode || '(none — sponsored post?)'}`);
   btn.dataset.busy = '1';
   btn.classList.add('igfm-loading');
   toast('Resolving post media…');
