@@ -30,8 +30,10 @@ Videos save as progressive MP4 (audio included).
 
 > First pass ✅ 2026-07-08 — confirmed working on live posts. Carousel resolution ✅ 2026-07-14 —
 > both the warm feed→modal path (`network_cache`) and the cold direct ad-permalink path
-> (`media_info`, `DYw5KdMDH6a`) verified 8/8 in live Chrome. Re-run this list after any change to
-> the DOM heuristics in `content.js`.
+> (`media_info`, `DYw5KdMDH6a`) verified 8/8 in live Chrome. Reel with audio-attribution ✅ and the
+> fullscreen Reels-viewer rail button ✅ 2026-07-14 (`DY_HBkqxebO` → correct shortcode → single
+> `.mp4`; button seats between Save and "…", survives reel-swap, shows when bookmarked). Re-run this
+> list after any change to the DOM heuristics in `content.js`.
 
 This WSL env has no GUI Chrome, so the automated tests can't click the real page. A change counts
 as **verified** when, in a logged-in Chrome:

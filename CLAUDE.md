@@ -198,6 +198,10 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     where hard-coded classes are not. The rail re-renders (React swaps the whole column) when
     scrolling between reels; the existing MutationObserver + `.igfm-btn` self-heal re-injects. Only
     tried when `findActionBar` returns null, so it never competes with the feed/modal bar.
+    **Chrome-verified 2026-07-14** (`/reel/DY_HBkqxebO/`): the button seats at rail child index 5
+    (= Save+1 = More−1), white icon, matching 52px rhythm; survives reel-swap in both directions
+    with no duplicate; still present with the Save→`Remove` label flipped; rail = 8 direct children
+    and `section` count = 1 (nothing for `findActionBar` to grab first).
 
 ## Validate / test
 
