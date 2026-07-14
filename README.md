@@ -39,6 +39,8 @@ as **verified** when, in a logged-in Chrome:
 - [ ] Feed **single image** post → 1 correctly-named `.jpg`/`.webp` in `Downloads/instagram-captures/`
 - [ ] Feed **carousel** → all items land, `-01…-NN`, mixed image/video types correct
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
+- [ ] **Reel with a music/audio attribution** (e.g. `/reel/DY_HBkqxebO/`) → saves the `.mp4`, not
+      6 poster JPGs; console `shortcode=<realcode>` (never `audio`) and `resolved via network_cache`
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
 - [ ] **Feed carousel with deferred data, WARM tap** (open via feed → modal, e.g.
@@ -62,7 +64,7 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 59 tests
+node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 63 tests
 node --check extension/*.js
 ```
 

@@ -57,6 +57,27 @@ t('no shortcode in non-post paths', () => {
   assert.equal(R.shortcodeFromUrl(''), null);
 });
 
+// The /reels/audio/<id>/ attribution-link trap (2026-07-14): "audio" matches the code pattern and
+// precedes the reel's own link in DOM order, so a naive scan captured shortcode="audio".
+t('shortcode: /reels/audio/<id>/ attribution link is rejected (not "audio")', () => {
+  assert.equal(R.shortcodeFromUrl('/reels/audio/1975396383375922/'), null);
+});
+
+t('shortcode: all-numeric captures (audio/collection ids) are rejected', () => {
+  assert.equal(R.shortcodeFromUrl('/reels/12345678901234/'), null);
+  assert.equal(R.shortcodeFromUrl('/p/99999/'), null);
+});
+
+t('shortcode: real reel + comment-permalink codes still resolve', () => {
+  assert.equal(R.shortcodeFromUrl('/bnogmartins/reel/DY_HBkqxebO/'), 'DY_HBkqxebO');
+  assert.equal(R.shortcodeFromUrl('/p/DY_HBkqxebO/c/18083708180131695/'), 'DY_HBkqxebO');
+});
+
+t('shortcode: a URL with the audio link BEFORE the reel link yields the reel code', () => {
+  // scans past the rejected "audio" match to the real code in the same string
+  assert.equal(R.shortcodeFromUrl('/reels/audio/1975396383375922/reel/DY_HBkqxebO/'), 'DY_HBkqxebO');
+});
+
 // ---- extractJsonBlobs + deepFind ----------------------------------------
 
 const API_V1_IMAGE = {

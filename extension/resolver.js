@@ -24,9 +24,21 @@ const IGFM_RESOLVER = (() => {
   const CAPTURE_FOLDER = 'instagram-captures';
   const FETCH_TIMEOUT_MS = 20000;
 
+  // /reels/audio/<numericId>/ is an AUDIO-attribution link, NOT a post — its "audio" slug (5
+  // chars, matches the code pattern) and numeric audio/collection ids must never be taken as a
+  // shortcode. This bit reel pages 2026-07-14: the audio link precedes the reel's own link in DOM
+  // order, so a naive first-match link scan captured "audio" and every lookup missed → images-only
+  // DOM fallback, no .mp4. Scan ALL matches and skip the traps; real shortcodes are mixed
+  // alphanumeric (they always contain letters).
   const shortcodeFromUrl = (url) => {
-    const m = SHORTCODE_RE.exec(url || '');
-    return m ? m[1] : null;
+    const re = new RegExp(SHORTCODE_RE.source, 'g'); // local copy — never mutate the exported const's lastIndex
+    let m;
+    while ((m = re.exec(url || ''))) {
+      const code = m[1];
+      if (code === 'audio' || /^\d+$/.test(code)) continue;
+      return code;
+    }
+    return null;
   };
 
   function extractJsonBlobs(html) {
@@ -364,8 +376,33 @@ const IGFM_RESOLVER = (() => {
     throw new Error(errors.join(' | ') || 'no resolution source succeeded');
   }
 
-  // Last resort, images only. Size filter skips avatars, highlight rings, and emoji images.
+  function usernameFromLocation() {
+    const seg = (location.pathname.split('/')[1] || '').replace(/[^A-Za-z0-9._]/g, '');
+    return seg && !['p', 'reel', 'reels', 'tv', 'explore', 'stories', 'direct', 'accounts'].includes(seg)
+      ? seg
+      : null;
+  }
+
+  // Last resort. Video-aware, but NEVER the <video> element's own src: IG streams video via MSE, so
+  // that's a useless `blob:` URL (gotcha #3) — only a direct http(s) <video>/<source> src is
+  // downloadable (rare). The real .mp4 comes from the network tap once the shortcode is right; this
+  // fallback exists for when every data path missed. Images filtered by size (skips avatars/rings).
   function mediaFromDom(container, shortcode) {
+    for (const v of container.querySelectorAll('video')) {
+      const cands = [v.currentSrc, v.getAttribute('src')].concat(
+        [...v.querySelectorAll('source')].map((s) => s.getAttribute('src')),
+      );
+      const direct = cands.find((u) => u && /^https?:/i.test(u)); // reject blob:/data:
+      if (direct) {
+        return {
+          username: usernameFromLocation(),
+          shortcode,
+          items: [{ type: 'video', url: direct, width: 0 }],
+          source: 'dom',
+          partial: true,
+        };
+      }
+    }
     const picks = [];
     for (const img of container.querySelectorAll('img[srcset], img[src]')) {
       const r = img.getBoundingClientRect();
@@ -383,13 +420,8 @@ const IGFM_RESOLVER = (() => {
       if (best && !picks.includes(best)) picks.push(best);
     }
     if (!picks.length) return null;
-    const seg = (location.pathname.split('/')[1] || '').replace(/[^A-Za-z0-9._]/g, '');
-    const username =
-      seg && !['p', 'reel', 'reels', 'tv', 'explore', 'stories', 'direct', 'accounts'].includes(seg)
-        ? seg
-        : null;
     return {
-      username,
+      username: usernameFromLocation(),
       shortcode,
       items: picks.map((url) => ({ type: 'image', url, width: 0 })),
       source: 'dom',

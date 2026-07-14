@@ -24,12 +24,25 @@ const dlSvg = (size) =>
   `<svg viewBox="0 0 23 23" width="${size}" height="${size}" fill="none" aria-hidden="true">${DL_PATHS}</svg>`;
 
 function findShortcode(container) {
+  // Prefer canonical page signals over scanning DOM links. On a permalink/reel the clicked
+  // container can be a broad <main> holding unrelated links, and a reel's /reels/audio/<id>/
+  // attribution link sits BEFORE its own link — a link scan grabbed "audio" and the download
+  // failed (2026-07-14). The address bar + <link rel=canonical> / og:url carry the post's OWN
+  // code with no DOM-order fragility.
+  const canonical = document.querySelector('link[rel="canonical"]');
+  const og = document.querySelector('meta[property="og:url"]');
+  const fromPage =
+    R.shortcodeFromUrl(location.pathname) ||
+    (canonical && R.shortcodeFromUrl(canonical.getAttribute('href'))) ||
+    (og && R.shortcodeFromUrl(og.getAttribute('content')));
+  if (fromPage) return fromPage;
+  // Feed / multi-post surfaces have no single canonical post — scan THIS container's links
+  // (scoped to the clicked card; shortcodeFromUrl skips the audio-attribution trap).
   for (const a of container.querySelectorAll('a[href]')) {
     const code = R.shortcodeFromUrl(a.getAttribute('href'));
     if (code) return code;
   }
-  // permalink pages and open post modals carry the shortcode in the address bar
-  return R.shortcodeFromUrl(location.pathname);
+  return null;
 }
 
 const hasPostMedia = (container) => !!container.querySelector('video, img');

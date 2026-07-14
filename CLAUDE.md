@@ -168,12 +168,27 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     untrusted lone images do. If `media/info` genuinely fails, a masked carousel is
     indistinguishable from a real single post, so it saves 1 file (best effort) — a *known*
     partial (count/type from a warm source) still reports `N of M slides` honestly.
+15. **A reel's `/reels/audio/<id>/` attribution link is a shortcode DECOY** — verified live
+    2026-07-14 on reel `DY_HBkqxebO`. On a reel page the audio/music-attribution link
+    (`/reels/audio/1975396383375922/`) sits BEFORE the reel's own link in DOM order, and `audio`
+    (5 chars) matches the code pattern — so a first-match `<a>`-scan captured `shortcode="audio"`,
+    every lookup missed (`via:null` despite a warm cache holding the real .mp4), and it collapsed
+    to the images-only DOM fallback (6 stray poster JPGs, no video). Two-part fix: (a) resolve the
+    shortcode from **canonical page signals first** — `location.pathname` → `<link rel=canonical>`
+    → `og:url` — and only scan container `<a>` links as the feed/multi-post fallback (a permalink
+    `container` can be a broad `<main>` full of unrelated links); (b) harden `shortcodeFromUrl` to
+    scan ALL matches and reject `audio` + all-numeric captures (audio/collection ids are numeric;
+    real shortcodes always contain letters). Match by `/reel/` (singular) and `/p/`; `/reels/`
+    (plural) is the reels feed / audio pages, never a post code — accept `/reels/<code>/` only
+    after the reject filter. Also made the DOM fallback video-aware (a direct http(s)
+    `<video>`/`<source>` src), but it still refuses `blob:` MSE URLs (gotcha #3) — the reel's real
+    .mp4 comes from the network tap once the shortcode is correct, not from the DOM.
 
 ## Validate / test
 
 ```bash
 node --check extension/*.js
-node test/run-tests.cjs        # 59 tests: pure resolver half + in-page resolver engines
+node test/run-tests.cjs        # 63 tests: pure resolver half + in-page resolver engines
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
