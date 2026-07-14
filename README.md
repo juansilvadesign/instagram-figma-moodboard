@@ -39,9 +39,11 @@ as **verified** when, in a logged-in Chrome:
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
-- [ ] **Feed carousel with deferred data** (e.g. `/p/DYw5KdMDH6a/`-style: embed is cover-only)
-      → ALL N slides land; console shows `[IGFM-Inject] media found via network_cache` (or
-      `embedded_json`)
+- [ ] **Feed carousel with deferred data, WARM tap** (open via feed → modal, e.g.
+      `DYw5KdMDH6a`) → ALL N slides land via `network_cache` (or `embedded_json`)
+- [ ] **Same carousel via DIRECT permalink, COLD tap** (paste `/p/DYw5KdMDH6a/` into a fresh
+      tab, click) → ALL N slides still land; `[IGFM] media resolved via media_info` — the
+      cover-only embed is completed from the media `pk` (the v0.3.1 fix for the cold case)
 - [ ] **Sponsored/ad post — carousel** → ALL slides land (any of `network_cache` /
       `embedded_json` / `ancestors:…`)
 - [ ] Regular posts resolve in-page (instant) or fall back to `web_info`/`graphql` — check the
@@ -57,7 +59,7 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 41 tests
+node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 52 tests
 node --check extension/*.js
 ```
 
@@ -66,10 +68,12 @@ node --check extension/*.js
 Shortcode from the post's links (or the URL) → resolve inside the page (MAIN-world
 `inject.js`): a fetch/XHR **tap cache** of the page's own feed/graphql responses (the only
 place full carousel + sponsored data still exists client-side), then server-embedded JSON
-blobs, then React fiber props → fetch `/p/<shortcode>/` and pick the richest embedded JSON
-across all blobs (cover-only embeds declare `carousel_media_count`) → GraphQL `doc_id` query
-(also retried when the embed was partial) → last-resort DOM `srcset` harvest (images only). Media URLs are direct
-CDN files (signed), saved by the service worker via `chrome.downloads`. Details + failure modes:
+blobs, then React fiber props. A cover-only in-page result seeds the escalation chain → fetch
+`/p/<shortcode>/` and pick the richest embedded JSON across all blobs → if still a partial
+carousel, complete it from the media `pk` via `/api/v1/media/<pk>/info/` (Instagram's own REST
+endpoint — no `doc_id` to rot; this covers a cold direct-permalink load) → GraphQL `doc_id`
+query → last-resort DOM `srcset` harvest (images only). Media URLs are direct CDN files
+(signed), saved by the service worker via `chrome.downloads`. Details + failure modes:
 [`CLAUDE.md`](CLAUDE.md) → Architecture / Gotchas.
 
 ## Not in the MVP (v2, see the idea note)

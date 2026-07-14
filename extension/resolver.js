@@ -86,14 +86,20 @@ const IGFM_RESOLVER = (() => {
         : [item]);
     const items = leaves.map(leaf).filter(Boolean);
     if (!items.length) return null;
-    // carousel_media_count survives even when the children were deferred out of the payload —
-    // expectedCount > items.length marks a PARTIAL result (cover-only embed).
+    // Cover-only payloads (permalink embeds, some cache entries) null the children but keep
+    // carousel_media_count AND media_type 8 / product_type carousel_container — either marks
+    // the result PARTIAL so the caller keeps resolving instead of accepting the cover.
     const declared = Number(item.carousel_media_count) || 0;
+    const isCarouselType =
+      item.media_type === 8 || item.product_type === 'carousel_container' ||
+      !!(item.carousel_media && item.carousel_media.length) || !!item.edge_sidecar_to_children;
     return {
       username: (item.user && item.user.username) || (item.owner && item.owner.username) || null,
       shortcode: item.code || item.shortcode || null,
+      pk: (item.pk && String(item.pk)) || (item.id && String(item.id).split('_')[0]) || null,
       items,
       expectedCount: Math.max(declared, items.length),
+      partial: items.length < declared || (isCarouselType && items.length < 2 && !declared),
       source: 'web_info',
     };
   }
@@ -127,11 +133,17 @@ const IGFM_RESOLVER = (() => {
     const items = nodes.map(leaf).filter(Boolean);
     if (!items.length) return null;
     const declared = Number(media.carousel_media_count) || 0;
+    const isCarouselType =
+      media.__typename === 'GraphSidecar' || media.__typename === 'XDTGraphSidecar' ||
+      media.media_type === 8 || media.product_type === 'carousel_container' ||
+      !!(edges && edges.length) || !!(media.carousel_media && media.carousel_media.length);
     return {
       username: (media.owner && media.owner.username) || (media.user && media.user.username) || null,
       shortcode: media.shortcode || media.code || null,
+      pk: (media.pk && String(media.pk)) || (media.id && String(media.id).split('_')[0]) || null,
       items,
       expectedCount: Math.max(declared, items.length),
+      partial: items.length < declared || (isCarouselType && items.length < 2 && !declared),
       source: 'graphql',
     };
   }
@@ -208,7 +220,7 @@ const IGFM_RESOLVER = (() => {
     return best;
   }
 
-  const isPartialCarousel = (m) => !!m && m.expectedCount > m.items.length;
+  const isPartialCarousel = (m) => !!m && (!!m.partial || m.expectedCount > m.items.length);
 
   // ---- browser-only from here down (fetch/document/location) ----
 
@@ -261,33 +273,68 @@ const IGFM_RESOLVER = (() => {
     return media;
   }
 
-  // The HTML embed can "succeed" with only the cover (deferred carousel children) — in that
-  // case the GraphQL doc_id query is still tried and the richer result wins; a partial result
-  // is only returned when nothing fuller exists.
-  async function fetchMediaByShortcode(shortcode) {
+  // Completion fetch for a cover-only carousel: the app's own REST endpoint returns the FULL
+  // item (all carousel children) given the media pk — which the cover payload carries. No
+  // doc_id involved, so it survives persisted-query rotation.
+  async function fetchMediaInfoByPk(pk) {
+    const res = await fetch(`https://www.instagram.com/api/v1/media/${pk}/info/`, {
+      credentials: 'same-origin',
+      headers: { 'X-IG-App-ID': IG_APP_ID, 'X-Requested-With': 'XMLHttpRequest', Accept: '*/*' },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`media info HTTP ${res.status}`);
+    const json = await res.json();
+    const media = json && json.items && normalizeApiV1Item(json.items[0]);
+    if (!media) throw new Error('media info returned no items');
+    media.source = 'media_info';
+    return media;
+  }
+
+  // Escalation chain for one shortcode. `seed` is an already-resolved (possibly partial)
+  // in-page result: it contributes the pk and acts as the floor. Each step only runs while the
+  // best result is still missing/partial; the richest wins; a full result short-circuits.
+  async function fetchMediaByShortcode(shortcode, seed) {
     const errors = [];
-    let best = null;
-    try {
-      best = await fetchPostHtmlMedia(shortcode);
-      if (!isPartialCarousel(best)) {
-        if (!best.shortcode) best.shortcode = shortcode;
-        return best;
+    let best = seed || null;
+    const consider = (m) => {
+      if (!m) return;
+      if (
+        !best ||
+        m.items.length > best.items.length ||
+        (m.items.length === best.items.length && isPartialCarousel(best) && !isPartialCarousel(m))
+      ) {
+        best = m;
       }
-      errors.push(`fetchPostHtmlMedia: cover-only (${best.items.length} of ${best.expectedCount})`);
-    } catch (e) {
-      errors.push(`fetchPostHtmlMedia: ${(e && e.message) || e}`);
+    };
+    if (!best || isPartialCarousel(best)) {
+      try {
+        consider(await fetchPostHtmlMedia(shortcode));
+      } catch (e) {
+        errors.push(`fetchPostHtmlMedia: ${(e && e.message) || e}`);
+      }
     }
-    try {
-      const g = await fetchGraphqlMedia(shortcode);
-      if (!best || g.items.length > best.items.length) best = g;
-    } catch (e) {
-      errors.push(`fetchGraphqlMedia: ${(e && e.message) || e}`);
+    if (best && isPartialCarousel(best) && best.pk) {
+      try {
+        consider(await fetchMediaInfoByPk(best.pk));
+      } catch (e) {
+        errors.push(`fetchMediaInfoByPk: ${(e && e.message) || e}`);
+      }
+    }
+    if (!best || isPartialCarousel(best)) {
+      try {
+        consider(await fetchGraphqlMedia(shortcode));
+      } catch (e) {
+        errors.push(`fetchGraphqlMedia: ${(e && e.message) || e}`);
+      }
     }
     if (best) {
       if (!best.shortcode) best.shortcode = shortcode;
+      if (errors.length && isPartialCarousel(best)) {
+        console.warn('[IGFM] resolution degraded — kept partial result:', errors.join(' | '));
+      }
       return best;
     }
-    throw new Error(errors.join(' | '));
+    throw new Error(errors.join(' | ') || 'no resolution source succeeded');
   }
 
   // Last resort, images only. Size filter skips avatars, highlight rings, and emoji images.
@@ -332,6 +379,7 @@ const IGFM_RESOLVER = (() => {
     normalizeApiV1Item,
     normalizeShortcodeMedia,
     pickMediaFromHtml,
+    isPartialCarousel,
     planDownloads,
     fetchMediaByShortcode,
     mediaFromDom,

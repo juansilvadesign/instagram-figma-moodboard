@@ -204,13 +204,14 @@ async function runDownload(btn) {
       console.warn('[IGFM] React Fiber extraction failed:', e);
     }
 
-    // Second attempt: fetch from the Instagram API/HTML (needs a shortcode). Also runs when
-    // the in-page hit is PARTIAL (cover-only cache entry) — richer result wins, partial is
-    // only a floor.
-    if (shortcode && (!media || media.expectedCount > media.items.length)) {
+    // Second attempt: the API escalation chain (post HTML → /api/v1/media/<pk>/info/ →
+    // GraphQL). Runs when there's no in-page hit OR the in-page hit is PARTIAL (a cover-only
+    // carousel: children nulled but media_type 8 / carousel_media_count survive). The partial
+    // result seeds the chain — it contributes the pk and stays as the floor.
+    if (shortcode && (!media || R.isPartialCarousel(media))) {
       try {
-        const fetched = await R.fetchMediaByShortcode(shortcode);
-        if (!media || (fetched && fetched.items.length > media.items.length)) media = fetched;
+        const fetched = await R.fetchMediaByShortcode(shortcode, media || null);
+        if (fetched) media = fetched;
       } catch (e) {
         console.warn('[IGFM] API resolution failed:', (e && e.message) || e);
       }
@@ -223,8 +224,9 @@ async function runDownload(btn) {
     }
 
     if (!media) throw new Error('no downloadable media found');
-    if (media.expectedCount > media.items.length) {
-      notice = ` — ${media.items.length} of ${media.expectedCount} slides (Instagram withheld the rest)`;
+    if (R.isPartialCarousel(media)) {
+      const total = media.expectedCount > media.items.length ? media.expectedCount : '?';
+      notice = ` — ${media.items.length} of ${total} slides (Instagram withheld the rest)`;
     }
     const items = R.planDownloads(media);
     console.log(`[IGFM] media resolved via ${media.source}:`, items);

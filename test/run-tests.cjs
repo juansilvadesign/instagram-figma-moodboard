@@ -25,6 +25,11 @@ function t(name, fn) {
   }
 }
 
+// Async tests are registered here and awaited after the synchronous suite (see the runner at the
+// bottom) — needed for the fetch-chain escalation tests, which mock global.fetch.
+const asyncTests = [];
+const ta = (name, fn) => asyncTests.push([name, fn]);
+
 // ---- shortcodeFromUrl ----------------------------------------------------
 
 t('shortcode from /p/ path', () => {
@@ -505,10 +510,164 @@ t('pickMediaFromHtml: richer candidates for OTHER posts lose to the target short
   assert.equal(m.items.length, 1);
 });
 
+// ---- pk extraction + type-based partial detection (resolver v0.3.1) ---------
+// A cold direct-permalink load can hand us a cover-only carousel whose carousel_media_count is
+// ALSO missing — only media_type 8 / product_type carousel_container / GraphSidecar mark it as a
+// carousel. Detect partial by TYPE, and carry the media pk so the caller can complete it via
+// /api/v1/media/<pk>/info/. Verified live 2026-07-13 on DYw5KdMDH6a.
+
+t('pk: api/v1 pk wins over id, id split fallback, else null', () => {
+  assert.equal(R.normalizeApiV1Item(Object.assign({ pk: '3141592653' }, API_V1_IMAGE)).pk, '3141592653');
+  assert.equal(R.normalizeApiV1Item(Object.assign({ id: '3141592653_17841400000' }, API_V1_IMAGE)).pk, '3141592653');
+  assert.equal(R.normalizeApiV1Item(API_V1_IMAGE).pk, null);
+});
+
+t('pk: graphql media carries pk (from id when pk absent)', () => {
+  assert.equal(R.normalizeShortcodeMedia(Object.assign({ id: '99_88' }, GQL_IMAGE)).pk, '99');
+});
+
+t('partial: api/v1 carousel by media_type 8, no count, lone cover → partial', () => {
+  const m = R.normalizeApiV1Item({
+    code: 'DYw5KdMDH6a', media_type: 8, pk: '3200', user: { username: 'linha.zero' },
+    image_versions2: { candidates: [{ url: 'https://cdn.example/cover.jpg', width: 1080 }] },
+  });
+  assert.equal(m.items.length, 1);
+  assert.equal(m.expectedCount, 1); // count unknown — type is the only signal
+  assert.equal(m.partial, true);
+  assert.equal(m.pk, '3200');
+  assert.equal(R.isPartialCarousel(m), true);
+});
+
+t('partial: api/v1 product_type carousel_container also marks a lone cover partial', () => {
+  const m = R.normalizeApiV1Item({
+    code: 'X', product_type: 'carousel_container',
+    image_versions2: { candidates: [{ url: 'https://cdn.example/c.jpg', width: 1080 }] },
+  });
+  assert.equal(m.partial, true);
+});
+
+t('partial: graphql XDTGraphSidecar typename with a lone child → partial', () => {
+  const m = R.normalizeShortcodeMedia({
+    shortcode: 'X', __typename: 'XDTGraphSidecar', display_url: 'https://cdn.example/c.jpg',
+  });
+  assert.equal(m.partial, true);
+  assert.equal(R.isPartialCarousel(m), true);
+});
+
+t('not partial: a plain single image is complete (no carousel signals)', () => {
+  const m = R.normalizeApiV1Item(API_V1_IMAGE);
+  assert.equal(m.partial, false);
+  assert.equal(R.isPartialCarousel(m), false);
+});
+
+t('not partial: a full 2+ child carousel is complete even without a count', () => {
+  const m = R.normalizeApiV1Item(AD_CAROUSEL); // 2 children, no media_type, no count
+  assert.equal(m.partial, false);
+  assert.equal(R.isPartialCarousel(m), false);
+});
+
+// ---- fetch-chain escalation with a partial seed (mocked fetch, v0.3.1) ------
+// fetchMediaByShortcode(shortcode, seed) drives HTML embed → /api/v1/media/<pk>/info/ → GraphQL,
+// each step running only while the best result is still partial, richest wins, full short-circuits.
+// The cold direct-permalink case: seed (or HTML embed) is cover-only but carries the pk; the REST
+// info endpoint (no doc_id to rot) completes it. Mock global.fetch by URL to test it under Node.
+
+const origFetch = global.fetch;
+const origDocument = global.document;
+function mockFetch(routes) {
+  const calls = [];
+  global.fetch = async (url, opts) => {
+    calls.push(String(url));
+    for (const [needle, handler] of routes) {
+      if (String(url).includes(needle)) return handler(url, opts);
+    }
+    throw new Error('unexpected fetch: ' + url);
+  };
+  return calls;
+}
+function restoreFetch() {
+  global.fetch = origFetch;
+  global.document = origDocument;
+}
+const htmlRes = (html) => ({ ok: true, status: 200, text: async () => html });
+const jsonRes = (obj) => ({ ok: true, status: 200, json: async () => obj });
+const FULL_EIGHT = { code: 'DYw5KdMDH6a', pk: '3200', user: { username: 'linha.zero' }, carousel_media: EIGHT_CHILDREN };
+
+ta('escalate: a complete seed short-circuits — zero network calls', async () => {
+  const calls = mockFetch([]);
+  try {
+    const seed = R.normalizeApiV1Item({ code: 'Full1', carousel_media: EIGHT_CHILDREN });
+    const out = await R.fetchMediaByShortcode('Full1', seed);
+    assert.equal(out.items.length, 8);
+    assert.equal(calls.length, 0);
+  } finally { restoreFetch(); }
+});
+
+ta('escalate: partial seed with pk → /api/v1/media/<pk>/info/ completes it, graphql skipped', async () => {
+  global.document = { cookie: 'csrftoken=x' };
+  const calls = mockFetch([
+    ['/p/DYw5KdMDH6a/', () => htmlRes('<html>' + jblob(webInfo(COVER_ONLY)) + '</html>')], // cold embed = cover-only
+    ['/api/v1/media/3200/info/', () => jsonRes({ items: [FULL_EIGHT] })],
+    ['/graphql/query', () => { throw new Error('graphql should not be reached'); }],
+  ]);
+  try {
+    const seed = R.normalizeApiV1Item(Object.assign({ pk: '3200', media_type: 8 }, COVER_ONLY));
+    assert.equal(R.isPartialCarousel(seed), true);
+    const out = await R.fetchMediaByShortcode('DYw5KdMDH6a', seed);
+    assert.equal(out.items.length, 8);
+    assert.equal(out.source, 'media_info');
+    assert.ok(calls.some((u) => u.includes('/api/v1/media/3200/info/')), 'pk info fetched');
+    assert.ok(!calls.some((u) => u.includes('/graphql/query')), 'graphql skipped once complete');
+  } finally { restoreFetch(); }
+});
+
+ta('escalate: no seed, cold permalink — HTML cover carries pk → info completes it', async () => {
+  global.document = { cookie: 'csrftoken=x' };
+  const coverWithPk = Object.assign({ pk: '77', media_type: 8 }, COVER_ONLY);
+  const calls = mockFetch([
+    ['/p/DYw5KdMDH6a/', () => htmlRes('<html>' + jblob(webInfo(coverWithPk)) + '</html>')],
+    ['/api/v1/media/77/info/', () => jsonRes({ items: [Object.assign({}, FULL_EIGHT, { pk: '77' })] })],
+  ]);
+  try {
+    const out = await R.fetchMediaByShortcode('DYw5KdMDH6a', null);
+    assert.equal(out.items.length, 8);
+    assert.equal(out.source, 'media_info');
+    assert.ok(calls.some((u) => u.includes('/api/v1/media/77/info/')));
+  } finally { restoreFetch(); }
+});
+
+ta('escalate: pk info fails → graphql attempted → still partial floor kept, no throw', async () => {
+  global.document = { cookie: 'csrftoken=x' };
+  const calls = mockFetch([
+    ['/p/DYw5KdMDH6a/', () => htmlRes('<html>' + jblob(webInfo(Object.assign({ pk: '5', media_type: 8 }, COVER_ONLY))) + '</html>')],
+    ['/api/v1/media/5/info/', () => ({ ok: false, status: 560 })],
+    ['/graphql/query', () => jsonRes({ data: {} })], // no media in response
+  ]);
+  try {
+    const out = await R.fetchMediaByShortcode('DYw5KdMDH6a', null);
+    assert.equal(out.items.length, 1);
+    assert.equal(R.isPartialCarousel(out), true); // honest partial, not a crash
+    assert.ok(calls.some((u) => u.includes('/api/v1/media/5/info/')), 'pk info attempted');
+    assert.ok(calls.some((u) => u.includes('/graphql/query')), 'graphql attempted after pk info failed');
+  } finally { restoreFetch(); }
+});
+
 // ---- summary ---------------------------------------------------------------
 
-console.log('\n' + passed + ' passed, ' + failed.length + ' failed');
-if (failed.length) {
-  console.error('Failed: ' + failed.join(', '));
-  process.exit(1);
-}
+(async () => {
+  for (const [name, fn] of asyncTests) {
+    try {
+      await fn();
+      passed++;
+      console.log('  ok  ' + name);
+    } catch (e) {
+      failed.push(name);
+      console.error('  FAIL ' + name + ' — ' + e.message);
+    }
+  }
+  console.log('\n' + passed + ' passed, ' + failed.length + ' failed');
+  if (failed.length) {
+    console.error('Failed: ' + failed.join(', '));
+    process.exit(1);
+  }
+})();

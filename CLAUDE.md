@@ -66,14 +66,27 @@ non-partial hit wins:
    permalink). This is the PRIMARY source for feed + sponsored carousels: the 2026 feed keeps
    post data in the Relay store, not fiber props, and `/p/` embeds are cover-only (both
    verified live 2026-07-13).
+   A partial in-page result (cover-only carousel) is not accepted as final — it is passed as
+   the **seed** into the escalation chain below, contributing its media `pk`.
 2. **Post-page HTML embed** — fetch `/p/<shortcode>/` with session cookies; pick the RICHEST
    candidate across ALL JSON blobs (`pickMediaFromHtml`): the first `web_info` may be
    cover-only with `carousel_media_count` declared while a deferred chunk carries the
-   children. A partial carousel (`expectedCount > items.length`) is not accepted as final.
-3. **GraphQL `doc_id` query** — POST `/graphql/query` (`X-IG-App-ID` + csrf cookie) →
-   `xdt_shortcode_media`; also fired when #2 came back partial — the richer result wins.
-4. **DOM harvest** — largest `srcset` candidates in the clicked container; images only; last
+   children.
+3. **Media-info REST completion** — `GET /api/v1/media/<pk>/info/` (`X-IG-App-ID`), fired only
+   when the best result so far is a partial carousel AND carries a `pk`. Returns the FULL item
+   (all `carousel_media`) and, unlike GraphQL, has **no `doc_id` to rot** — this is what closes
+   the cold direct-permalink case where the embed is cover-only and no in-app fetch warmed the
+   tap (see Gotcha #14).
+4. **GraphQL `doc_id` query** — POST `/graphql/query` (`X-IG-App-ID` + csrf cookie) →
+   `xdt_shortcode_media`; last network attempt, fired only while still partial — the richer
+   result wins.
+5. **DOM harvest** — largest `srcset` candidates in the clicked container; images only; last
    resort (a carousel only has 3–4 slides mounted at any instant).
+
+A carousel is **partial** (`isPartialCarousel`) when `expectedCount > items.length` OR the item
+is typed a carousel (`media_type 8` / `product_type carousel_container` / `__typename`
+GraphSidecar) yet fewer than 2 children resolved — the latter catches cover-only payloads whose
+`carousel_media_count` is *itself* missing.
 
 Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloads`
 (`conflictAction: 'uniquify'`).
@@ -130,12 +143,23 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     walking the carousel DOM — images-only, 3–4 mounted slides, violates resolution-from-data.
     Consequence: after (re)loading the extension the Instagram TAB must be reloaded too, or
     the tap misses the feed responses.
+14. **The network tap can be COLD on a direct permalink load** — opening `/p/<code>/` fresh (not
+    via feed/modal) fires no in-app paginated fetch, so the tap cache is empty and the embed is
+    cover-only (the v0.3.0 gap: that path resolved 1/8). Two-part fix (v0.3.1): (a) detect the
+    partial by carousel TYPE, not only by `carousel_media_count`, because a cold cover-only
+    payload can omit the count too (`media_type 8` / `product_type carousel_container` /
+    `__typename` GraphSidecar → `partial`); (b) complete it from the media **`pk`** (present on
+    the cover payload) via `GET /api/v1/media/<pk>/info/` — Instagram's own REST endpoint,
+    stable across `doc_id` rotation. The in-page partial result is passed as a `seed` into
+    `fetchMediaByShortcode(shortcode, seed)` so the pk survives even when the HTML embed is also
+    cover-only. Still data-not-pixels — no carousel-UI walking. If the pk endpoint AND graphql
+    both fail, the toast reports an honest `N of M slides` instead of crashing.
 
 ## Validate / test
 
 ```bash
 node --check extension/*.js
-node test/run-tests.cjs        # 41 tests: pure resolver half + in-page resolver engines
+node test/run-tests.cjs        # 52 tests: pure resolver half + in-page resolver engines
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
