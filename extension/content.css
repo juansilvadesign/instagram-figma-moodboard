@@ -50,6 +50,16 @@
   color: #fff;
 }
 
+/* Reel viewer vertical rail item. The wrap also carries a copied sibling class for the rail's
+   spacing rhythm; these rules (2-class specificity) center it and render the icon white over the
+   video. State colors on .igfm-btn (done/error) still win since they sit directly on the button. */
+.igfm-wrap.igfm-rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
 @keyframes igfm-spin {
   to {
     transform: rotate(360deg);

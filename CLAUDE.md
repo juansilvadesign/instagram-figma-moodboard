@@ -183,6 +183,21 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     after the reject filter. Also made the DOM fallback video-aware (a direct http(s)
     `<video>`/`<source>` src), but it still refuses `blob:` MSE URLs (gotcha #3) — the reel's real
     .mp4 comes from the network tap once the shortcode is correct, not from the DOM.
+16. **The fullscreen Reels viewer's action bar is a VERTICAL rail (`<div>`, not `<section>`)** —
+    reported 2026-07-14 on `/reel/<code>/`. `findActionBar` only matches an innermost `<section>`
+    with ≥2 `svg[aria-label]`, so it misses the rail entirely and no button appears. `findReelRail`
+    handles it: the rail is the element that is the common grandparent of the most icon action
+    buttons (each item = `wrapper > [role="button"] > svg[aria-label]`), found by **majority vote**
+    over `button → wrapper → rail`, requiring ≥3 (Like/Comment/Share/Save/More). Do this
+    **structurally — never by aria-label TEXT** (gotcha #2: locale — `Save`/`Salvar`/`Guardar`… —
+    AND the Save label flips to `Remove`/`Remover` once bookmarked). Placement: insert before the
+    **last `svg[aria-label]` item** (the "…" menu); the trailing audio-thumb/spacer has no labelled
+    svg so it's excluded, landing the button right after Save without naming any label. Inherit the
+    rail's spacing by **copying a live sibling item's `className`** — the `x…` classes are
+    build-hashed and rotate between IG deploys, so the structural walk + copied class is durable
+    where hard-coded classes are not. The rail re-renders (React swaps the whole column) when
+    scrolling between reels; the existing MutationObserver + `.igfm-btn` self-heal re-injects. Only
+    tried when `findActionBar` returns null, so it never competes with the feed/modal bar.
 
 ## Validate / test
 

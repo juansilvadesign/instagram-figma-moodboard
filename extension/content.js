@@ -80,6 +80,7 @@ function inject(container) {
   btn.innerHTML = dlSvg(24);
 
   const bar = findActionBar(container);
+  const rail = bar ? null : findReelRail(container);
   if (bar) {
     // Append as the section's LAST child: the action-bar section IS the flex row (Like/Comment/
     // Repost/Share left, Save pushed right — live DOM 2026-07-08), so this lands right of Save.
@@ -88,11 +89,51 @@ function inject(container) {
     wrap.className = 'igfm-wrap';
     wrap.appendChild(btn);
     bar.appendChild(wrap);
+  } else if (rail) {
+    injectIntoRail(rail, btn);
   } else {
     btn.classList.add('igfm-overlay');
     container.classList.add('igfm-anchor');
     container.appendChild(btn);
   }
+}
+
+// The fullscreen Reels viewer renders its actions as a VERTICAL rail (a <div>, not a <section>),
+// so findActionBar misses it and the button never appears (reported 2026-07-14 on /reel/<code>/).
+// Find the rail STRUCTURALLY — never by aria-label TEXT (gotcha #2, locale) — as the element that
+// is the common grandparent of the most icon action buttons (each item is wrapper > [role=button]
+// > svg[aria-label], per the live DOM). Majority-vote so a differently-nested item can't fool it.
+function findReelRail(container) {
+  const counts = new Map();
+  for (const b of container.querySelectorAll('[role="button"]')) {
+    if (!b.querySelector('svg[aria-label]')) continue;
+    const railEl = b.parentElement && b.parentElement.parentElement; // button → item wrapper → rail
+    if (railEl) counts.set(railEl, (counts.get(railEl) || 0) + 1);
+  }
+  let best = null;
+  let bestN = 0;
+  for (const [railEl, n] of counts) {
+    if (n > bestN) {
+      best = railEl;
+      bestN = n;
+    }
+  }
+  return bestN >= 3 ? best : null; // Like/Comment/Share/Save/More — a real action rail
+}
+
+function injectIntoRail(rail, btn) {
+  // Place before the LAST icon item (the "…" more menu). The trailing audio-thumb/spacer has no
+  // svg[aria-label], so it's excluded — this lands us right after Save without naming any label,
+  // and is naturally immune to the Save→Remove label flip. Inherit the item's spacing from a live
+  // sibling's class (the x… classes are build-hashed and rotate between IG deploys — copy, never
+  // hard-code), then re-anchor fresh each scan (React swaps the whole column between reels).
+  const items = [...rail.children].filter((c) => c.querySelector('svg[aria-label]'));
+  const anchor = items[items.length - 1] || null; // the "…" menu, or end if none
+  const wrap = document.createElement('div');
+  if (anchor) wrap.className = anchor.className;
+  wrap.classList.add('igfm-wrap', 'igfm-rail-item');
+  wrap.appendChild(btn);
+  rail.insertBefore(wrap, anchor); // before the "…" menu → right after Save
 }
 
 // Feed + modal posts render as <article> (modals contain one). Fallbacks: a post modal without

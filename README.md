@@ -41,6 +41,9 @@ as **verified** when, in a logged-in Chrome:
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
 - [ ] **Reel with a music/audio attribution** (e.g. `/reel/DY_HBkqxebO/`) → saves the `.mp4`, not
       6 poster JPGs; console `shortcode=<realcode>` (never `audio`) and `resolved via network_cache`
+- [ ] **Fullscreen Reels viewer** (`/reel/<code>/` vertical rail) → button appears IN the right-side
+      rail, between Save and the "…" menu; survives scrolling to the next reel; icon is white and
+      still shows when the post is already bookmarked (Save→Remove label flip must not hide it)
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
 - [ ] **Feed carousel with deferred data, WARM tap** (open via feed → modal, e.g.
