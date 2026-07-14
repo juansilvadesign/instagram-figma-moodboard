@@ -566,6 +566,42 @@ t('not partial: a full 2+ child carousel is complete even without a count', () =
   assert.equal(R.isPartialCarousel(m), false);
 });
 
+// needsCompletion — the deeper 2026-07-14 finding: a COLD ad-carousel cover LIES (media_type 1,
+// null count), so it isn't "partial" by any embedded signal; only its untrusted source + a pk
+// betray that it might be a masked carousel worth confirming via media/info.
+
+const withSource = (item, source) => { const m = R.normalizeApiV1Item(item); m.source = source; return m; };
+const LONE_IMG = { code: 'X', pk: '9', media_type: 1, image_versions2: { candidates: [{ url: 'https://cdn.example/c.jpg', width: 1080 }] } };
+
+t('needsCompletion: lone image + pk from an untrusted source (embedded_json) must be confirmed', () => {
+  const m = withSource(LONE_IMG, 'embedded_json');
+  assert.equal(R.isPartialCarousel(m), false); // the cover lies — nothing marks it partial
+  assert.equal(R.needsCompletion(m), true);
+});
+
+t('needsCompletion: lone image + pk from network_cache (live API) is trusted — no extra call', () => {
+  assert.equal(R.needsCompletion(withSource(LONE_IMG, 'network_cache')), false);
+});
+
+t('needsCompletion: a media_info-sourced single image is authoritative — not re-checked', () => {
+  assert.equal(R.needsCompletion(withSource(LONE_IMG, 'media_info')), false);
+});
+
+t('needsCompletion: a single video/reel is never a masked carousel cover', () => {
+  const m = withSource({ code: 'R', pk: '9', video_versions: [{ url: 'https://cdn.example/v.mp4', width: 720 }] }, 'embedded_json');
+  assert.equal(R.needsCompletion(m), false);
+});
+
+t('needsCompletion: a lone image with no pk cannot be completed — not flagged', () => {
+  const m = withSource(API_V1_IMAGE, 'embedded_json'); // API_V1_IMAGE has no pk/id
+  assert.equal(m.pk, null);
+  assert.equal(R.needsCompletion(m), false);
+});
+
+t('needsCompletion: a full 2+ item carousel is complete regardless of source', () => {
+  assert.equal(R.needsCompletion(withSource(AD_CAROUSEL, 'embedded_json')), false);
+});
+
 // ---- fetch-chain escalation with a partial seed (mocked fetch, v0.3.1) ------
 // fetchMediaByShortcode(shortcode, seed) drives HTML embed → /api/v1/media/<pk>/info/ → GraphQL,
 // each step running only while the best result is still partial, richest wins, full short-circuits.
@@ -633,6 +669,40 @@ ta('escalate: no seed, cold permalink — HTML cover carries pk → info complet
     assert.equal(out.items.length, 8);
     assert.equal(out.source, 'media_info');
     assert.ok(calls.some((u) => u.includes('/api/v1/media/77/info/')));
+  } finally { restoreFetch(); }
+});
+
+ta('escalate: masked ad-carousel — cover lies (media_type 1, null count) but pk → media/info gives 8', async () => {
+  global.document = { cookie: 'csrftoken=x' };
+  // The COLD permalink embed for the "Linha Zero" ad (live pk 3904872284116778650): a single
+  // image, media_type 1, null count — indistinguishable from a real single post except for the
+  // pk. media/info returns the truth (media_type 8, 8 children). This is the exact 2026-07-14 bug.
+  const lyingCover = {
+    code: 'DYw5KdMDH6a', pk: '3904872284116778650', media_type: 1, carousel_media_count: null,
+    user: { username: 'linha.zero' },
+    image_versions2: { candidates: [{ url: 'https://cdn.example/cover.jpg', width: 1080 }] },
+  };
+  const truth = {
+    code: 'DYw5KdMDH6a', pk: '3904872284116778650', media_type: 8, product_type: 'ad',
+    carousel_media_count: 8, user: { username: 'linha.zero' }, carousel_media: EIGHT_CHILDREN,
+  };
+  const calls = mockFetch([
+    ['/api/v1/media/3904872284116778650/info/', () => jsonRes({ items: [truth] })],
+    ['/p/DYw5KdMDH6a/', () => htmlRes('<html><body>bare shell — no web_info</body></html>')],
+    ['/graphql/query', () => { throw new Error('graphql should not be reached'); }],
+  ]);
+  try {
+    const seed = R.normalizeApiV1Item(lyingCover);
+    seed.source = 'embedded_json';
+    assert.equal(seed.partial, false, 'the lying cover does not look partial by any embedded signal');
+    assert.equal(R.isPartialCarousel(seed), false);
+    assert.equal(R.needsCompletion(seed), true, 'but its untrusted source + pk flag it for media/info');
+    const out = await R.fetchMediaByShortcode('DYw5KdMDH6a', seed);
+    assert.equal(out.items.length, 8, 'media/info completed the masked carousel');
+    assert.equal(out.source, 'media_info');
+    assert.ok(calls.some((u) => u.includes('/api/v1/media/3904872284116778650/info/')), 'media/info called');
+    assert.ok(!calls.some((u) => u.includes('/p/DYw5KdMDH6a/')), 'useless bare-shell HTML fetch skipped');
+    assert.ok(!calls.some((u) => u.includes('/graphql/query')), 'graphql skipped once complete');
   } finally { restoreFetch(); }
 });
 

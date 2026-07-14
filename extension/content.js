@@ -205,10 +205,11 @@ async function runDownload(btn) {
     }
 
     // Second attempt: the API escalation chain (post HTML → /api/v1/media/<pk>/info/ →
-    // GraphQL). Runs when there's no in-page hit OR the in-page hit is PARTIAL (a cover-only
-    // carousel: children nulled but media_type 8 / carousel_media_count survive). The partial
-    // result seeds the chain — it contributes the pk and stays as the floor.
-    if (shortcode && (!media || R.isPartialCarousel(media))) {
+    // GraphQL). Runs when there's no in-page hit OR the hit still needs completing — a partial
+    // carousel, OR a lone image from an untrusted source that could be a masked ad-carousel
+    // cover (cold permalink embeds lie: media_type 1 + null count on a real 8-slide carousel).
+    // The in-page result seeds the chain — it contributes the pk and stays as the floor.
+    if (shortcode && (!media || R.needsCompletion(media))) {
       try {
         const fetched = await R.fetchMediaByShortcode(shortcode, media || null);
         if (fetched) media = fetched;

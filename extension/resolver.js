@@ -1,13 +1,17 @@
 // resolver.js — Instagram media resolution for the moodboard capture MVP.
 //
-// Resolution chain (first success wins):
-//   1. Post-page HTML embed — fetch /p/<shortcode>/ with the logged-in session's cookies and
-//      parse the server-rendered <script type="application/json"> Relay blobs for
-//      xdt_api__v1__media__shortcode__web_info. One code path covers image, video, and carousel,
-//      and works no matter how the user is viewing the post (feed, modal, permalink).
-//   2. GraphQL doc_id query — POST /graphql/query with the public web app id + csrf cookie.
+// Escalation chain (fetchMediaByShortcode; richest / most-complete result wins), seeded by the
+// in-page result content.js already resolved:
+//   1. Post-page HTML embed — fetch /p/<shortcode>/ and parse the server-rendered
+//      <script type="application/json"> Relay blobs for xdt_api__v1__media__shortcode__web_info.
+//      Skipped when the seed is already a usable single media that just needs pk-confirmation.
+//   2. Media-info REST completion — GET /api/v1/media/<pk>/info/. Authoritative: an ad-carousel
+//      viewed cold advertises media_type 1 + null carousel_media_count in its EMBEDDED cover
+//      (the cover lies), so a lone image from an untrusted source (embed/HTML/fiber) must be
+//      confirmed here — media/info returns the true media_type 8 + all children. No doc_id to rot.
+//   3. GraphQL doc_id query — POST /graphql/query with the public web app id + csrf cookie.
 //      doc_id values rot when Instagram rotates persisted queries (see CLAUDE.md).
-//   3. DOM harvest (images only) — largest srcset candidates inside the clicked container.
+//   4. DOM harvest (images only) — largest srcset candidates inside the clicked container.
 //
 // Runs as a classic content script (no ES modules in MV3 content_scripts); exposes one global,
 // IGFM_RESOLVER, consumed by content.js. The pure helpers (parsers, normalizers, planDownloads)
@@ -222,6 +226,23 @@ const IGFM_RESOLVER = (() => {
 
   const isPartialCarousel = (m) => !!m && (!!m.partial || m.expectedCount > m.items.length);
 
+  // A single IMAGE can secretly be an ad-carousel COVER: viewed cold (direct permalink), the
+  // server-embedded blob / permalink HTML / fiber props advertise media_type 1 + null
+  // carousel_media_count for what is really an 8-slide carousel (verified live 2026-07-14 on
+  // DYw5KdMDH6a — the cover lies). So a lone image is only trustworthy when it came from a LIVE
+  // API response — the network tap, or our own graphql/media-info calls; otherwise, given a pk,
+  // confirm/complete it via media/info. (A single video/reel is never a masked carousel; a real
+  // carousel already has ≥2 items; a partial is caught by isPartialCarousel.)
+  const TRUSTED_LONE_IMAGE = new Set(['network_cache', 'graphql', 'media_info']);
+  const needsCompletion = (m) =>
+    !!m &&
+    (isPartialCarousel(m) ||
+      (!!m.pk &&
+        m.items.length < 2 &&
+        m.items[0] &&
+        m.items[0].type === 'image' &&
+        !TRUSTED_LONE_IMAGE.has(m.source)));
+
   // ---- browser-only from here down (fetch/document/location) ----
 
   async function fetchPostHtmlMedia(shortcode) {
@@ -301,11 +322,14 @@ const IGFM_RESOLVER = (() => {
       if (
         !best ||
         m.items.length > best.items.length ||
-        (m.items.length === best.items.length && isPartialCarousel(best) && !isPartialCarousel(m))
+        (m.items.length === best.items.length && needsCompletion(best) && !needsCompletion(m))
       ) {
         best = m;
       }
     };
+    // HTML embed: only when we have no usable seed or it's a flagged partial. A lone-image cover
+    // that just needs pk-confirmation skips this (its permalink HTML is a bare shell anyway) and
+    // goes straight to media/info.
     if (!best || isPartialCarousel(best)) {
       try {
         consider(await fetchPostHtmlMedia(shortcode));
@@ -313,7 +337,10 @@ const IGFM_RESOLVER = (() => {
         errors.push(`fetchPostHtmlMedia: ${(e && e.message) || e}`);
       }
     }
-    if (best && isPartialCarousel(best) && best.pk) {
+    // Media-info completion: whenever the best result still needs confirming AND carries a pk.
+    // This is what completes the cold masked ad-carousel — the cover lies about its media_type,
+    // media/info tells the truth.
+    if (best && best.pk && needsCompletion(best)) {
       try {
         consider(await fetchMediaInfoByPk(best.pk));
       } catch (e) {
@@ -380,6 +407,7 @@ const IGFM_RESOLVER = (() => {
     normalizeShortcodeMedia,
     pickMediaFromHtml,
     isPartialCarousel,
+    needsCompletion,
     planDownloads,
     fetchMediaByShortcode,
     mediaFromDom,

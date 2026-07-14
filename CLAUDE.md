@@ -72,21 +72,23 @@ non-partial hit wins:
    candidate across ALL JSON blobs (`pickMediaFromHtml`): the first `web_info` may be
    cover-only with `carousel_media_count` declared while a deferred chunk carries the
    children.
-3. **Media-info REST completion** — `GET /api/v1/media/<pk>/info/` (`X-IG-App-ID`), fired only
-   when the best result so far is a partial carousel AND carries a `pk`. Returns the FULL item
+3. **Media-info REST completion** — `GET /api/v1/media/<pk>/info/` (`X-IG-App-ID`), fired when
+   the best result so far still `needsCompletion` AND carries a `pk`. Returns the FULL item
    (all `carousel_media`) and, unlike GraphQL, has **no `doc_id` to rot** — this is what closes
-   the cold direct-permalink case where the embed is cover-only and no in-app fetch warmed the
-   tap (see Gotcha #14).
+   the cold direct-permalink case, including the masked ad-carousel whose embed cover lies about
+   its type (see Gotcha #14).
 4. **GraphQL `doc_id` query** — POST `/graphql/query` (`X-IG-App-ID` + csrf cookie) →
    `xdt_shortcode_media`; last network attempt, fired only while still partial — the richer
    result wins.
 5. **DOM harvest** — largest `srcset` candidates in the clicked container; images only; last
    resort (a carousel only has 3–4 slides mounted at any instant).
 
-A carousel is **partial** (`isPartialCarousel`) when `expectedCount > items.length` OR the item
-is typed a carousel (`media_type 8` / `product_type carousel_container` / `__typename`
-GraphSidecar) yet fewer than 2 children resolved — the latter catches cover-only payloads whose
-`carousel_media_count` is *itself* missing.
+A result **needs completing** (`needsCompletion`, the escalation trigger) when it is a partial
+carousel — `isPartialCarousel`: `expectedCount > items.length`, or typed a carousel (`media_type
+8` / `product_type carousel_container` / `__typename` GraphSidecar) with < 2 children — **OR** it
+is a lone **image** carrying a `pk` from an *untrusted* source (server-embedded blob / permalink
+HTML / fiber), which could be a masked ad-carousel cover (Gotcha #14). A lone image from a LIVE
+API response (`network_cache` / `graphql` / `media_info`) is trusted and needs no extra call.
 
 Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloads`
 (`conflictAction: 'uniquify'`).
@@ -143,23 +145,35 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     walking the carousel DOM — images-only, 3–4 mounted slides, violates resolution-from-data.
     Consequence: after (re)loading the extension the Instagram TAB must be reloaded too, or
     the tap misses the feed responses.
-14. **The network tap can be COLD on a direct permalink load** — opening `/p/<code>/` fresh (not
-    via feed/modal) fires no in-app paginated fetch, so the tap cache is empty and the embed is
-    cover-only (the v0.3.0 gap: that path resolved 1/8). Two-part fix (v0.3.1): (a) detect the
-    partial by carousel TYPE, not only by `carousel_media_count`, because a cold cover-only
-    payload can omit the count too (`media_type 8` / `product_type carousel_container` /
-    `__typename` GraphSidecar → `partial`); (b) complete it from the media **`pk`** (present on
-    the cover payload) via `GET /api/v1/media/<pk>/info/` — Instagram's own REST endpoint,
-    stable across `doc_id` rotation. The in-page partial result is passed as a `seed` into
-    `fetchMediaByShortcode(shortcode, seed)` so the pk survives even when the HTML embed is also
-    cover-only. Still data-not-pixels — no carousel-UI walking. If the pk endpoint AND graphql
-    both fail, the toast reports an honest `N of M slides` instead of crashing.
+14. **On a COLD direct permalink, an ad-carousel COVER LIES about its type** — the load-bearing
+    2026-07-14 finding. Opening `/p/<code>/` fresh (not via feed/modal) fires no in-app fetch, so
+    the tap is empty and the only in-page data is the server-embedded cover. For a sponsored
+    carousel (`product_type: ad`) that cover advertises **`media_type: 1` and
+    `carousel_media_count: null`** — i.e. it looks *exactly* like a genuine single-image post.
+    So you **cannot** detect the masked carousel by type or count (that was the v0.3.1 mistake);
+    `isPartialCarousel` returns false and the 1-of-8 cover gets accepted. The tell is the
+    **source + a pk**: a lone image is only trustworthy when it came from a LIVE API response
+    (the network tap, or our own graphql/media-info calls); a lone image from an *untrusted*
+    source (server-embedded blob / permalink HTML / fiber) that carries a `pk` must be confirmed.
+    Fix (v0.3.2) = `needsCompletion(m)`: partial OR (lone **image** + `pk` + untrusted `source`)
+    → escalate to **`GET /api/v1/media/<pk>/info/`** (Instagram's own REST endpoint, no `doc_id`
+    to rot), which returns the true `media_type 8` + all children. Verified live: `media/info`
+    for pk `3904872284116778650` → HTTP 200, 8 children, while the permalink embed showed 1. The
+    in-page result is passed as a `seed` into `fetchMediaByShortcode(shortcode, seed)` so the pk
+    survives the (bare-shell) HTML embed, which is skipped for a lone-image seed. Note a plain
+    `fetch('/p/<code>/')` of an ad often returns a bare HTML shell with **no `web_info` at all** —
+    another reason the pk (from the in-page cover) is the load-bearing handle. Still
+    data-not-pixels — no carousel-UI walking. A `network_cache` lone image is trusted (it *is*
+    the live API response), so genuine single-image feed downloads take no extra request; only
+    untrusted lone images do. If `media/info` genuinely fails, a masked carousel is
+    indistinguishable from a real single post, so it saves 1 file (best effort) — a *known*
+    partial (count/type from a warm source) still reports `N of M slides` honestly.
 
 ## Validate / test
 
 ```bash
 node --check extension/*.js
-node test/run-tests.cjs        # 52 tests: pure resolver half + in-page resolver engines
+node test/run-tests.cjs        # 59 tests: pure resolver half + in-page resolver engines
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
