@@ -28,7 +28,9 @@ Videos save as progressive MP4 (audio included).
 
 ## Verify in Chrome (manual regression checklist)
 
-> First pass ✅ 2026-07-08 — confirmed working on live posts. Re-run this list after any change to
+> First pass ✅ 2026-07-08 — confirmed working on live posts. Carousel resolution ✅ 2026-07-14 —
+> both the warm feed→modal path (`network_cache`) and the cold direct ad-permalink path
+> (`media_info`, `DYw5KdMDH6a`) verified 8/8 in live Chrome. Re-run this list after any change to
 > the DOM heuristics in `content.js`.
 
 This WSL env has no GUI Chrome, so the automated tests can't click the real page. A change counts
