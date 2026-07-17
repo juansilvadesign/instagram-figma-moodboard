@@ -35,6 +35,49 @@
   color: #ed4956;
 }
 
+/* v2 profile capture — deliberately FIXED rather than injected into Instagram's profile header.
+   The header is another bespoke surface (see gotcha #16, the Reels rail) and a heuristic there
+   would drift with every redesign; a fixed control has nothing to miss, and reading as our own
+   tool rather than IG chrome is honest. */
+.igfm-profile-btn {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2147483000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font: 600 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #fff;
+  background: #0095f6;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+}
+
+.igfm-profile-btn:hover {
+  background: #1877f2;
+}
+
+.igfm-profile-btn.igfm-loading {
+  background: #5a6673;
+  cursor: progress;
+}
+
+.igfm-profile-btn.igfm-loading svg {
+  animation: igfm-spin 0.9s linear infinite;
+}
+
+.igfm-profile-btn.igfm-done {
+  background: #00a35c;
+}
+
+.igfm-profile-btn.igfm-error {
+  background: #ed4956;
+}
+
 /* Fallback placement when no action bar is found: pinned inside the post container,
    below the header row so it doesn't collide with the "..." menu. */
 .igfm-anchor {

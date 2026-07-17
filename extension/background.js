@@ -27,7 +27,10 @@ function downloadOne(item) {
       {
         url: item.url,
         filename: safeRelativePath(item.filename),
-        conflictAction: 'uniquify',
+        // Media uniquifies (never clobber an earlier capture); capture.json asks for 'overwrite',
+        // because a re-capture that left 'capture (1).json' would be silently ignored by the
+        // placement CLI, which reads capture.json by name.
+        conflictAction: item.conflictAction === 'overwrite' ? 'overwrite' : 'uniquify',
         saveAs: false,
       },
       (id) => {

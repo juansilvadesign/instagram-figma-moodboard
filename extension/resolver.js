@@ -74,13 +74,29 @@ const IGFM_RESOLVER = (() => {
     arr && arr.length ? arr.reduce((a, b) => (widthOf(b) > widthOf(a) ? b : a)) : null;
 
   // api/v1 shape (xdt_api__v1__media__shortcode__web_info.items[0]).
+  // The poster frame that accompanies a video (image_versions2 / display_resources). Carried on
+  // video items as `poster` so a caller that needs a PLACEABLE still — the v2 profile crawl saves
+  // grid covers, and a Figma image fill can't hold an .mp4 — never has to re-derive it or fall
+  // back to ffmpeg. Verified live 2026-07-17: every video on a profile grid ships a poster.
+  const posterOf = (m) => {
+    const candidates = m.image_versions2 && m.image_versions2.candidates;
+    if (candidates && candidates.length) return largest(candidates, (x) => x.width || 0).url || null;
+    const r = largest(m.display_resources, (x) => x.config_width || 0);
+    return (r && r.src) || m.display_url || m.thumbnail_src || null;
+  };
+
+  // A post pinned to the top of a profile grid. Field name verified live 2026-07-17 (probe on
+  // @solarity.studio): the key exists on every item but is only NON-EMPTY on the pinned one.
+  const isPinned = (m) =>
+    Array.isArray(m.timeline_pinned_user_ids) && m.timeline_pinned_user_ids.length > 0;
+
   // video_versions is checked first: video items also carry image_versions2 (the poster frame).
   function normalizeApiV1Item(item) {
     if (!item) return null;
     const leaf = (m) => {
       if (m.video_versions && m.video_versions.length) {
         const v = largest(m.video_versions, (x) => x.width || 0);
-        return { type: 'video', url: v.url, width: v.width || 0 };
+        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(m) };
       }
       const candidates = m.image_versions2 && m.image_versions2.candidates;
       if (candidates && candidates.length) {
@@ -89,7 +105,7 @@ const IGFM_RESOLVER = (() => {
       }
       // fallback to graphql fields just in case they are mixed
       if (m.is_video && m.video_url) {
-        return { type: 'video', url: m.video_url, width: (m.dimensions && m.dimensions.width) || 0 };
+        return { type: 'video', url: m.video_url, width: (m.dimensions && m.dimensions.width) || 0, poster: posterOf(m) };
       }
       const r = largest(m.display_resources, (x) => x.config_width || 0);
       const url = (r && r.src) || m.display_url;
@@ -111,11 +127,16 @@ const IGFM_RESOLVER = (() => {
       !!(item.carousel_media && item.carousel_media.length) || !!item.edge_sidecar_to_children;
     return {
       username: (item.user && item.user.username) || (item.owner && item.owner.username) || null,
+      // The raw author object rides along so the v2 profile crawl can read the display name and
+      // avatar from media the tap ALREADY cached, instead of scraping the header DOM or spending
+      // a request. Consumers must treat every field as optional — shape not probe-verified.
+      user: item.user || item.owner || null,
       shortcode: item.code || item.shortcode || null,
       pk: (item.pk && String(item.pk)) || (item.id && String(item.id).split('_')[0]) || null,
       items,
       expectedCount: Math.max(declared, items.length),
       partial: items.length < declared || (isCarouselType && items.length < 2 && !declared),
+      pinned: isPinned(item),
       source: 'web_info',
     };
   }
@@ -127,7 +148,7 @@ const IGFM_RESOLVER = (() => {
       // support api/v1 style version keys if they are mixed into graphql nodes
       if (n.video_versions && n.video_versions.length) {
         const v = largest(n.video_versions, (x) => x.width || 0);
-        return { type: 'video', url: v.url, width: v.width || 0 };
+        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(n) };
       }
       const candidates = n.image_versions2 && n.image_versions2.candidates;
       if (candidates && candidates.length) {
@@ -136,7 +157,7 @@ const IGFM_RESOLVER = (() => {
       }
       // standard graphql fields
       if (n.is_video && n.video_url) {
-        return { type: 'video', url: n.video_url, width: (n.dimensions && n.dimensions.width) || 0 };
+        return { type: 'video', url: n.video_url, width: (n.dimensions && n.dimensions.width) || 0, poster: posterOf(n) };
       }
       const r = largest(n.display_resources, (x) => x.config_width || 0);
       const url = (r && r.src) || n.display_url;
@@ -155,11 +176,13 @@ const IGFM_RESOLVER = (() => {
       !!(edges && edges.length) || !!(media.carousel_media && media.carousel_media.length);
     return {
       username: (media.owner && media.owner.username) || (media.user && media.user.username) || null,
+      user: media.owner || media.user || null, // see normalizeApiV1Item — optional, unverified shape
       shortcode: media.shortcode || media.code || null,
       pk: (media.pk && String(media.pk)) || (media.id && String(media.id).split('_')[0]) || null,
       items,
       expectedCount: Math.max(declared, items.length),
       partial: items.length < declared || (isCarouselType && items.length < 2 && !declared),
+      pinned: isPinned(media),
       source: 'graphql',
     };
   }

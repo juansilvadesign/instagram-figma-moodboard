@@ -153,6 +153,11 @@ function postContainers() {
 
 function scan() {
   for (const c of postContainers()) inject(c);
+  try {
+    injectProfileButton(); // v2: adds/removes the fixed profile-capture control on SPA nav
+  } catch (e) {
+    console.warn('[IGFM] profile button injection failed:', e);
+  }
 }
 
 function toast(text, kind = '') {
@@ -304,10 +309,148 @@ async function runDownload(btn) {
   }
 }
 
+// ---- v2: whole-profile crawl ------------------------------------------------
+
+// The profile button is FIXED-POSITION, not injected into Instagram's header. The header is
+// another bespoke surface whose structure would need its own archaeology (findActionBar missed
+// the Reels rail entirely — gotcha #16 — and cost a round of live debugging). A fixed control
+// has no DOM heuristic to drift, and it reads as OUR tool rather than as Instagram chrome.
+function injectProfileButton() {
+  const C = globalThis.IGFM_CRAWLER;
+  const onProfile = !!C.profileHandleFromPath(location.pathname);
+  const existing = document.querySelector('.igfm-profile-btn');
+  if (!onProfile) {
+    if (existing) existing.remove(); // SPA nav away from a profile
+    return;
+  }
+  if (existing) return;
+  const btn = document.createElement('button');
+  btn.className = 'igfm-profile-btn';
+  btn.type = 'button';
+  btn.title = 'Capture this profile into Downloads/instagram-captures/<handle>/ (shift-click: every carousel slide)';
+  btn.innerHTML = `${dlSvg(16)}<span>Capture profile</span>`;
+  document.body.appendChild(btn);
+}
+
+async function sendPlan(items) {
+  if (!items.length) return { ok: true, saved: 0, failed: 0 };
+  const res = await chrome.runtime.sendMessage({ type: 'igfm-download', items });
+  if (!res || !res.ok) throw new Error((res && res.error) || 'no response from background');
+  return res;
+}
+
+async function runProfileCrawl(btn, full) {
+  if (btn.dataset.busy) return;
+  const C = globalThis.IGFM_CRAWLER;
+  const handle = C.profileHandleFromPath(location.pathname);
+  if (!handle) return toast('Not a profile page', 'err');
+
+  btn.dataset.busy = '1';
+  btn.classList.add('igfm-loading');
+  const limit = C.DEFAULT_LIMIT;
+  console.log(`[IGFM] profile crawl start — handle=${handle} limit=${limit} mode=${full ? 'full' : 'covers'}`);
+  try {
+    // 1. Scroll the grid. This both reveals the links we read ORDER from and makes the PAGE issue
+    //    its own pagination requests, which inject.js's tap caches — so resolution below is free.
+    toast(`Reading @${handle}'s grid…`);
+    const all = await C.scrollUntil(limit, (n, t) => toast(`Reading grid… ${n}/${t}`));
+    const codes = all.slice(0, limit);
+    if (!codes.length) throw new Error('no posts found on this grid');
+
+    const entries = [];
+    const skipped = [];
+    let saved = 0;
+    let profile = null;
+
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      // The tap already holds this post (probe 2026-07-17: 27/27 grid posts cached, carousels
+      // complete). fetchMediaFromReact hits mediaCache first and returns without a request; the
+      // hardened escalation chain only runs if this specific post was somehow missed.
+      let media = null;
+      try {
+        media = await fetchMediaFromReact(document, code);
+      } catch (e) {
+        console.warn('[IGFM] in-page lookup failed for', code, e);
+      }
+      if (!media || R.needsCompletion(media)) {
+        try {
+          const fetched = await R.fetchMediaByShortcode(code, media || null);
+          if (fetched) media = fetched;
+        } catch (e) {
+          console.warn('[IGFM] escalation failed for', code, (e && e.message) || e);
+        }
+      }
+      if (!media || !media.items.length) {
+        skipped.push({ shortcode: code, reason: 'unresolved' });
+        toast(`${i + 1}/${codes.length} — skipped ${code}`);
+        continue;
+      }
+      if (!media.shortcode) media.shortcode = code;
+      if (!profile) profile = C.profileFromMedia(media.user);
+
+      const plan = C.intoHandleFolder(C.planPost(media, { full }), handle);
+      const res = await sendPlan(plan);
+      saved += res.saved || 0;
+      entries.push(C.captureEntry(media, plan));
+      toast(`Captured ${i + 1} of ${codes.length}…`);
+
+      // Randomized 5–10s. Paces the media downloads AND the page's own pagination traffic.
+      if (i < codes.length - 1) await C.sleep(C.nextDelayMs());
+    }
+
+    // 2. Avatar (one image, no delay — a single CDN file).
+    if (profile && profile.avatar_url) {
+      try {
+        const aplan = C.planAvatar(profile.avatar_url, handle);
+        await sendPlan(aplan);
+        profile.avatar_file = aplan[0].filename.split('/').pop();
+        saved += 1;
+      } catch (e) {
+        console.warn('[IGFM] avatar download failed:', e);
+      }
+    }
+
+    // 3. capture.json — the placement engine's contract. `posts` is in FEED ORDER (grid order),
+    //    which buildManifest({feedOrder}) trusts over its pk fallback. Overwrites so a re-capture
+    //    can't leave a stale 'capture (1).json' the CLI would ignore.
+    const capture = C.buildCaptureJson({
+      handle, date: new Date().toISOString().slice(0, 10), full, limit,
+      profile, entries, skipped,
+    });
+    await sendPlan([{
+      url: 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(capture, null, 2)),
+      filename: `${R.CAPTURE_FOLDER}/${handle}/capture.json`,
+      conflictAction: 'overwrite',
+    }]);
+
+    btn.classList.add('igfm-done');
+    const miss = skipped.length ? ` (${skipped.length} skipped)` : '';
+    toast(`Captured ${entries.length} posts → Downloads/${R.CAPTURE_FOLDER}/${handle}/${miss}`, 'ok');
+    console.log('[IGFM] profile crawl done:', JSON.stringify({ handle, posts: entries.length, saved, skipped: skipped.length }));
+    setTimeout(() => btn.classList.remove('igfm-done'), 3000);
+  } catch (e) {
+    console.error('[IGFM] profile crawl error:', e);
+    btn.classList.add('igfm-error');
+    toast('Profile capture failed: ' + ((e && e.message) || e), 'err');
+    setTimeout(() => btn.classList.remove('igfm-error'), 4500);
+  } finally {
+    delete btn.dataset.busy;
+    btn.classList.remove('igfm-loading');
+  }
+}
+
 // One delegated, capture-phase handler — robust to React re-renders and IG's own click handlers.
 document.addEventListener(
   'click',
   (e) => {
+    const profileBtn = e.target.closest?.('.igfm-profile-btn');
+    if (profileBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      runProfileCrawl(profileBtn, e.shiftKey); // shift = every carousel slide, not just covers
+      return;
+    }
     const btn = e.target.closest?.('.igfm-btn');
     if (!btn) return;
     e.preventDefault();
