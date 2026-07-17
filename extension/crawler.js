@@ -145,23 +145,43 @@ const IGFM_CRAWLER = (() => {
     return Math.round(DELAY_MIN_MS + r * (DELAY_MAX_MS - DELAY_MIN_MS));
   }
 
-  // What the profile header offers without any extra request. full_name / avatar ride along on
-  // the media the tap already cached (`item.user`); bio, external_url and the follower/following
-  // counts do NOT — they live in the profile payload, which the tap discards (it only keeps
-  // objects that looksLikeMedia). Those stay null and the placement agent simply skips them,
-  // leaving the template's own text in place. See PLACEMENT.md → Not built yet.
-  function profileFromMedia(rawUser) {
-    if (!rawUser) return null;
+  // Instagram shows abbreviated counts ("4M", "12.3K", "1,861") — a raw 4000000 in a 21px-wide
+  // slot would blow the header's layout.
+  function formatCount(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n < 0) return null;
+    const round = (v) => (v >= 100 || v % 1 === 0 ? String(Math.round(v)) : v.toFixed(1));
+    if (n >= 1e6) return round(n / 1e6) + 'M';
+    if (n >= 1e4) return round(n / 1e3) + 'K'; // IG only abbreviates from 10k up
+    return n.toLocaleString('en-US');
+  }
+
+  // Merge the two things the page already handed us, neither of which costs a request:
+  //  - `rawUser` — the thin author object riding on every media item (username/full_name/avatar)
+  //  - `rawProfile` — the profile payload the page fetched for itself (bio/link/counts), cached by
+  //    inject.js's tap and looked up by EXACT username
+  // Accepts the web (`edge_*`) and mobile (`*_count`) shapes without assuming which arrived; any
+  // field that is genuinely absent stays null, and placement then writes nothing for it. Never
+  // invent a count — a board that asserts someone else's followers is a lie you'll later believe.
+  function profileFromMedia(rawUser, rawProfile) {
+    const u = rawUser || null;
+    const p = rawProfile || null;
+    if (!u && !p) return null;
+    const edge = (e) => (e && typeof e.count === 'number' ? e.count : null);
+    const num = (v) => (typeof v === 'number' ? v : null);
+    const pick = (...vals) => vals.find((v) => v !== undefined && v !== null) ?? null;
     return {
-      username: rawUser.username || null,
-      display_name: rawUser.full_name || null,
-      avatar_url: rawUser.profile_pic_url_hd || rawUser.profile_pic_url || null,
-      is_verified: !!rawUser.is_verified,
-      biography: null,
-      external_url: null,
-      posts_count: null,
-      followers: null,
-      following: null,
+      username: pick(p && p.username, u && u.username),
+      display_name: pick(p && p.full_name, u && u.full_name),
+      avatar_url: pick(
+        p && p.profile_pic_url_hd, p && p.profile_pic_url,
+        u && u.profile_pic_url_hd, u && u.profile_pic_url,
+      ),
+      is_verified: !!((p && p.is_verified) || (u && u.is_verified)),
+      biography: p ? pick(p.biography) : null,
+      external_url: p ? pick(p.external_url) : null,
+      posts_count: p ? pick(edge(p.edge_owner_to_timeline_media), num(p.media_count)) : null,
+      followers: p ? pick(edge(p.edge_followed_by), num(p.follower_count)) : null,
+      following: p ? pick(edge(p.edge_follow), num(p.following_count)) : null,
     };
   }
 
@@ -213,6 +233,7 @@ const IGFM_CRAWLER = (() => {
     captureEntry,
     buildCaptureJson,
     nextDelayMs,
+    formatCount,
     profileFromMedia,
     gridCodes,
     scrollUntil,

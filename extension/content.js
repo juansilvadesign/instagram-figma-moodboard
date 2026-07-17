@@ -332,6 +332,41 @@ function injectProfileButton() {
   document.body.appendChild(btn);
 }
 
+// Asks inject.js for the profile payload the PAGE already fetched (bio, link, counts). Makes no
+// network request — inject.js answers from its tap cache, keyed by exact username. Returns null
+// when the page never fetched it, and the crawl then simply records nulls.
+function fetchProfileFromPage(handle) {
+  return new Promise((resolve) => {
+    const reqId = 'igfmp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    let done = false;
+    const finish = (p) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('igfm-response-profile', onResponse);
+      clearTimeout(timer);
+      resolve(p);
+    };
+    const onResponse = (e) => {
+      let d = e && e.detail;
+      if (typeof d === 'string') {
+        try {
+          d = JSON.parse(d);
+        } catch {
+          d = null;
+        }
+      }
+      if (!d || d.reqId !== reqId) return;
+      console.log(`[IGFM] profile payload: ${d.profile ? 'hit' : 'miss'} (${d.cached || 0} cached)`);
+      finish(d.profile || null);
+    };
+    document.addEventListener('igfm-response-profile', onResponse);
+    const timer = setTimeout(() => finish(null), 1600);
+    document.dispatchEvent(
+      new CustomEvent('igfm-request-profile', { detail: JSON.stringify({ reqId, handle }) }),
+    );
+  });
+}
+
 async function sendPlan(items) {
   if (!items.length) return { ok: true, saved: 0, failed: 0 };
   const res = await chrome.runtime.sendMessage({ type: 'igfm-download', items });
@@ -356,6 +391,9 @@ async function runProfileCrawl(btn, full) {
     const all = await C.scrollUntil(limit, (n, t) => toast(`Reading grid… ${n}/${t}`));
     const codes = all.slice(0, limit);
     if (!codes.length) throw new Error('no posts found on this grid');
+
+    // The profile payload the page fetched for itself — bio/link/counts. Zero extra requests.
+    const rawProfile = await fetchProfileFromPage(handle);
 
     const entries = [];
     const skipped = [];
@@ -387,7 +425,7 @@ async function runProfileCrawl(btn, full) {
         continue;
       }
       if (!media.shortcode) media.shortcode = code;
-      if (!profile) profile = C.profileFromMedia(media.user);
+      if (!profile) profile = C.profileFromMedia(media.user, rawProfile);
 
       const plan = C.intoHandleFolder(C.planPost(media, { full }), handle);
       const res = await sendPlan(plan);
@@ -398,6 +436,9 @@ async function runProfileCrawl(btn, full) {
       // Randomized 5–10s. Paces the media downloads AND the page's own pagination traffic.
       if (i < codes.length - 1) await C.sleep(C.nextDelayMs());
     }
+
+    // The payload alone still yields a header even if every post somehow failed to resolve.
+    if (!profile) profile = C.profileFromMedia(null, rawProfile);
 
     // 2. Avatar (one image, no delay — a single CDN file).
     if (profile && profile.avatar_url) {

@@ -76,6 +76,62 @@
     return false;
   }
 
+  // A profile payload (bio + counts), as opposed to the thin `user` object that rides on a media
+  // item (username/full_name/profile_pic only). The profile page fetches this for itself while you
+  // browse, so the tap already sees it — it was simply discarded because it isn't media.
+  // Both the web (`edge_*`) and mobile (`*_count`) shapes are accepted; we never assume which
+  // query delivered it.
+  const PROFILE_KEYS = [
+    'biography', 'edge_followed_by', 'edge_follow', 'edge_owner_to_timeline_media',
+    'follower_count', 'following_count', 'media_count',
+  ];
+
+  function looksLikeProfile(obj) {
+    let name;
+    try {
+      name = obj.username;
+    } catch {
+      return false;
+    }
+    if (typeof name !== 'string' || !name) return false;
+    for (const k of PROFILE_KEYS) {
+      try {
+        if (obj[k] !== undefined) return true;
+      } catch {
+        // getter threw — not our object
+      }
+    }
+    return false;
+  }
+
+  const profileRichness = (o) => {
+    let n = 0;
+    for (const k of PROFILE_KEYS) {
+      try {
+        if (o[k] !== undefined) n++;
+      } catch { /* proxy */ }
+    }
+    return n;
+  };
+
+  // Keyed by USERNAME on purpose: a page also carries suggested/related users, so the caller looks
+  // up its exact handle and can never be handed a stranger's bio.
+  const profileCache = new Map();
+
+  function profilePut(obj) {
+    let name;
+    try {
+      name = obj.username;
+    } catch {
+      return;
+    }
+    if (typeof name !== 'string' || !name) return;
+    const prev = profileCache.get(name);
+    if (prev && profileRichness(prev) >= profileRichness(obj)) return; // keep the richest seen
+    if (profileCache.size > 50 && !prev) profileCache.clear(); // bounded; profiles are tiny
+    profileCache.set(name, obj);
+  }
+
   function looksLikeMedia(obj, shortcode) {
     let code;
     try {
@@ -337,7 +393,9 @@
   // Harvest every media-shaped object out of a parsed payload (timeline, graphql, embedded
   // blob). Unlike the fiber search this must NOT skip underscore keys — Relay wraps results in
   // __bbox — and must go deep (timeline nests media ~10 levels down). Iterative, budgeted.
-  function collectMedia(root, put, budget) {
+  // `putProfile` is optional so existing callers/tests are unaffected. Collecting both in ONE walk
+  // keeps the single 120ms budget — a second traversal would double the cost of every response.
+  function collectMedia(root, put, budget, putProfile) {
     const deadline = now() + (budget && budget.ms !== undefined ? budget.ms : 120);
     let nodes = budget && budget.nodes !== undefined ? budget.nodes : 150000;
     const visited = new Set();
@@ -353,6 +411,7 @@
         continue;
       }
       if (looksLikeMedia(v, null)) put(v);
+      if (putProfile && looksLikeProfile(v)) putProfile(v);
       let keys;
       try {
         keys = Object.keys(v);
@@ -373,7 +432,7 @@
   }
 
   function ingestResponseText(text) {
-    for (const payload of parseJsonChunks(text)) collectMedia(payload, cachePut, { ms: 120 });
+    for (const payload of parseJsonChunks(text)) collectMedia(payload, cachePut, { ms: 120 }, profilePut);
   }
 
   // Wrap fetch + XHR before any page script runs. Ingestion is deferred off the response's
@@ -502,6 +561,35 @@
 
   if (typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
     if (typeof window !== 'undefined') installNetworkTap();
+    // Profile payload lookup (v2 crawl header). Answers ONLY from what the page already fetched —
+    // it issues no request of its own. Looked up by exact username, so a page full of suggested
+    // users can't leak a stranger's bio onto the board.
+    document.addEventListener('igfm-request-profile', (e) => {
+      let req = e && e.detail;
+      if (typeof req === 'string') {
+        try {
+          req = JSON.parse(req);
+        } catch {
+          req = null;
+        }
+      }
+      if (!req || !req.reqId) return;
+      const reqId = String(req.reqId);
+      let detail;
+      try {
+        const handle = req.handle ? String(req.handle) : null;
+        let raw = handle ? profileCache.get(handle) : null;
+        if (!raw && handle) {
+          scanInlineScripts(); // the profile page server-embeds its own payload on first paint
+          raw = profileCache.get(handle) || null;
+        }
+        detail = safeJsonStringify({ reqId, profile: raw || null, cached: profileCache.size });
+      } catch (err) {
+        detail = JSON.stringify({ reqId, profile: null, error: String((err && err.message) || err) });
+      }
+      document.dispatchEvent(new CustomEvent('igfm-response-profile', { detail }));
+    });
+
     document.addEventListener('igfm-request-react', (e) => {
       let req = e && e.detail;
       if (typeof req === 'string') {
@@ -601,7 +689,10 @@
     parseJsonChunks,
     collectMedia,
     cachePut,
+    looksLikeProfile,
+    profilePut,
     _mediaCache: mediaCache,
+    _profileCache: profileCache,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api; // node tests
