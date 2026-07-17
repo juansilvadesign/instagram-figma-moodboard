@@ -383,7 +383,8 @@ async function runProfileCrawl(btn, full) {
   btn.dataset.busy = '1';
   btn.classList.add('igfm-loading');
   const limit = C.DEFAULT_LIMIT;
-  console.log(`[IGFM] profile crawl start — handle=${handle} limit=${limit} mode=${full ? 'full' : 'covers'}`);
+  const date = new Date().toISOString().slice(0, 10); // one dated folder per capture
+  console.log(`[IGFM] profile crawl start — handle=${handle} date=${date} limit=${limit} mode=${full ? 'full' : 'covers'}`);
   try {
     // 1. Scroll the grid. This both reveals the links we read ORDER from and makes the PAGE issue
     //    its own pagination requests, which inject.js's tap caches — so resolution below is free.
@@ -427,7 +428,7 @@ async function runProfileCrawl(btn, full) {
       if (!media.shortcode) media.shortcode = code;
       if (!profile) profile = C.profileFromMedia(media.user, rawProfile);
 
-      const plan = C.intoHandleFolder(C.planPost(media, { full }), handle);
+      const plan = C.intoHandleFolder(C.planPost(media, { full }), handle, date);
       const res = await sendPlan(plan);
       saved += res.saved || 0;
       entries.push(C.captureEntry(media, plan));
@@ -443,7 +444,7 @@ async function runProfileCrawl(btn, full) {
     // 2. Avatar (one image, no delay — a single CDN file).
     if (profile && profile.avatar_url) {
       try {
-        const aplan = C.planAvatar(profile.avatar_url, handle);
+        const aplan = C.planAvatar(profile.avatar_url, handle, date);
         await sendPlan(aplan);
         profile.avatar_file = aplan[0].filename.split('/').pop();
         saved += 1;
@@ -455,19 +456,16 @@ async function runProfileCrawl(btn, full) {
     // 3. capture.json — the placement engine's contract. `posts` is in FEED ORDER (grid order),
     //    which buildManifest({feedOrder}) trusts over its pk fallback. Overwrites so a re-capture
     //    can't leave a stale 'capture (1).json' the CLI would ignore.
-    const capture = C.buildCaptureJson({
-      handle, date: new Date().toISOString().slice(0, 10), full, limit,
-      profile, entries, skipped,
-    });
+    const capture = C.buildCaptureJson({ handle, date, full, limit, profile, entries, skipped });
     await sendPlan([{
       url: 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(capture, null, 2)),
-      filename: `${R.CAPTURE_FOLDER}/${handle}/capture.json`,
+      filename: `${R.CAPTURE_FOLDER}/${handle}/${date}/capture.json`,
       conflictAction: 'overwrite',
     }]);
 
     btn.classList.add('igfm-done');
     const miss = skipped.length ? ` (${skipped.length} skipped)` : '';
-    toast(`Captured ${entries.length} posts → Downloads/${R.CAPTURE_FOLDER}/${handle}/${miss}`, 'ok');
+    toast(`Captured ${entries.length} posts → Downloads/${R.CAPTURE_FOLDER}/${handle}/${date}/${miss}`, 'ok');
     console.log('[IGFM] profile crawl done:', JSON.stringify({ handle, posts: entries.length, saved, skipped: skipped.length }));
     setTimeout(() => btn.classList.remove('igfm-done'), 3000);
   } catch (e) {

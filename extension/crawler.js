@@ -83,13 +83,22 @@ const IGFM_CRAWLER = (() => {
 
   const seg = (s) => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80);
 
-  // planDownloads writes into `instagram-captures/`; a profile crawl nests one level deeper so
-  // that ONE FOLDER = ONE CAPTURE, which is what the placement engine reads.
-  function intoHandleFolder(plan, handle) {
-    const dir = `${R.CAPTURE_FOLDER}/${seg(handle)}/`;
+  // planDownloads writes into `instagram-captures/`; a profile crawl nests into
+  // `<handle>/<date>/` so that ONE FOLDER = ONE CAPTURE — which is what the placement engine
+  // reads, and mirrors the Figma contract (one Section per `@handle · date`).
+  //
+  // The DATE is load-bearing, not decoration. Without it, re-capturing a profile collides with
+  // the previous capture: `conflictAction: 'uniquify'` silently accumulated 25 ` (1)` duplicates
+  // on the second run (live 2026-07-17), and a LATER-day recapture would have quietly overwritten
+  // the archive this tool exists to build. Dated folders also make `overwrite` safe within a
+  // capture: same handle + same day = the same content, so replacing is correct and keeps the
+  // folder clean.
+  function intoHandleFolder(plan, handle, date) {
+    const dir = `${R.CAPTURE_FOLDER}/${seg(handle)}/${seg(date)}/`;
     return (plan || []).map((p) => ({
       ...p,
       filename: String(p.filename).replace(`${R.CAPTURE_FOLDER}/`, dir),
+      conflictAction: 'overwrite',
     }));
   }
 
@@ -97,14 +106,18 @@ const IGFM_CRAWLER = (() => {
   // manifest.cjs parses post files as '<user>-<code>[-NN].<ext>' and skips any name without a
   // username/shortcode hyphen split — so '_avatar.jpg' can never be mistaken for a post and
   // placed on the grid. '<handle>-avatar.jpg' WOULD parse, as a post with shortcode "avatar".
-  function planAvatar(url, handle) {
+  function planAvatar(url, handle, date) {
     if (!url) return [];
     let ext = 'jpg';
     try {
       const m = /\.([A-Za-z0-9]{2,4})$/.exec(new URL(url, 'https://x/').pathname);
       if (m && ['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(m[1].toLowerCase())) ext = m[1].toLowerCase();
     } catch { /* keep jpg */ }
-    return [{ url, filename: `${R.CAPTURE_FOLDER}/${seg(handle)}/_avatar.${ext}` }];
+    return [{
+      url,
+      filename: `${R.CAPTURE_FOLDER}/${seg(handle)}/${seg(date)}/_avatar.${ext}`,
+      conflictAction: 'overwrite',
+    }];
   }
 
   /** One capture.json entry. `pinned` is informational — feed order already encodes the position. */
