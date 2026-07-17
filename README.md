@@ -91,9 +91,13 @@ untrusted source is confirmed by pk, while a trusted live-API single image is no
 
 ## v2 — profile → Figma moodboard
 
-### Profile crawl (v0.4.0 — ⚠️ NOT yet verified in Chrome)
+### Profile crawl (v0.4.0 — ✅ verified in Chrome 2026-07-17)
 
-On a profile page a fixed **"Capture profile"** button appears (bottom-right). It scrolls the grid,
+> First real run: `@solarity.studio` → **24/24 posts, 0 skipped**, covers only, pinned post first,
+> `capture.json` + `_avatar.jpg` written, no ffmpeg needed — then placed into Figma. The whole
+> pipeline works end-to-end.
+
+On a profile page a fixed **"Capture profile"** button appears (top-right). It scrolls the grid,
 saves the most recent **24** posts' **covers** into `Downloads/instagram-captures/<handle>/`, and
 writes a **`capture.json`** the placement engine reads. **Shift-click** to save every carousel
 slide instead of covers only. Pacing is randomized 5–10s per post.

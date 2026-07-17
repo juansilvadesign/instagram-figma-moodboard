@@ -11,12 +11,11 @@ A personal Manifest V3 Chrome extension used **inside a logged-in Chrome profile
 MVP is **single-post capture**: an injected button on any Instagram post downloads that post's
 media — image, video, or every item of a carousel — to `Downloads/instagram-captures/`, named
 `<username>-<shortcode>[-NN].<ext>`. The v2 (full-profile → Figma moodboard via the talk-to-figma
-MCP) is the tool's real differentiator. The **agent-side placement engine works end-to-end**
-(verified live 2026-07-17 — see [`placement/PLACEMENT.md`](placement/PLACEMENT.md)), and the
-**profile crawler is written (v0.4.0) but NOT yet verified in Chrome** (blocker B4): a fixed
-"Capture profile" button crawls the grid and writes covers + `capture.json` into
-`Downloads/instagram-captures/<handle>/`. Treat the crawl as unproven until the README's profile
-checklist passes on a real profile.
+MCP) is the tool's real differentiator and is **COMPLETE + verified end-to-end 2026-07-17**: the
+fixed "Capture profile" button crawls the grid into `Downloads/instagram-captures/<handle>/`
+(24 covers + `_avatar.jpg` + `capture.json`), and the agent places that folder into a dated Figma
+Section — proven on a real profile (`@solarity.studio`: 24/24 posts, 0 skipped, pinned post at
+slot 0, zero ffmpeg). Recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
 ## Decisions (2026-07-07 build)
 
@@ -238,6 +237,16 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     cover saved as `<user>-<code>-01.jpg` would be placed as post `<code>-01`. Same trap for the
     avatar: `<handle>-avatar.jpg` parses as a post with shortcode `"avatar"` and would take a grid
     slot, so it is written as **`_avatar.jpg`** (no hyphen → the parser skips it).
+
+21. **The CDN URL's file extension LIES — Chrome silently corrects it, so a recorded filename can
+    be wrong.** Live 2026-07-17: three `@solarity.studio` covers came from URLs whose path ended
+    `.heic`, so `extFromUrl` planned `<code>.heic` — but the bytes were **JPEG** (1440×1800,
+    confirmed with `file`), and `chrome.downloads` renamed them to `.jpeg` from the response's
+    Content-Type. Result: `capture.json`'s `cover`/`files` fields named 3 files that don't exist on
+    disk. Nothing broke, because `placement/manifest.cjs` **matches files by parsing the folder**,
+    never by that field — keep it that way; `cover` is advisory. (Same family as gotcha #14:
+    Instagram's metadata lies, the bytes are the truth.) If a REAL `.heic` ever lands, Figma's
+    `createImage` can't place it — that would need a conversion step.
 
 ## Validate / test
 
