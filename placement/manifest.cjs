@@ -209,12 +209,41 @@ if (require.main === module) {
     console.error('usage: node placement/manifest.cjs <capture-folder> [--handle x] [--date YYYY-MM-DD] [--slots 24] [--no-posters]');
     process.exit(2);
   }
+  // capture.json is the crawler's sidecar and is AUTHORITATIVE for order — Instagram pins posts,
+  // so the pk fallback would bury a pinned post (live: @solarity.studio's pinned post is its
+  // OLDEST). Its recorded `cover` filenames are only advisory: Chrome renames a download when the
+  // CDN's Content-Type contradicts the URL's extension (IG serves JPEG bytes from a '.heic' path),
+  // so files are always matched by parsing the folder, never by that field.
+  let capture = null;
+  try {
+    capture = JSON.parse(fs.readFileSync(path.join(dir, 'capture.json'), 'utf8'));
+  } catch { /* hand-captured folder — no sidecar, fall back to pk order */ }
+
+  const postMeta = capture && Array.isArray(capture.posts)
+    ? new Map(capture.posts.map((p) => [p.shortcode, p]))
+    : null;
+
   const manifest = buildManifest({
     files: fs.readdirSync(dir),
-    handle: flag('handle', null),
-    date: flag('date', new Date().toISOString().slice(0, 10)),
+    handle: flag('handle', (capture && capture.handle) || null),
+    date: flag('date', (capture && capture.captured_at) || new Date().toISOString().slice(0, 10)),
     slotCount: Number(flag('slots', SLOT_COUNT)),
+    feedOrder: capture && Array.isArray(capture.posts) ? capture.posts.map((p) => p.shortcode) : null,
+    profile: (capture && capture.profile) || null,
   });
+  manifest.orderedBy = postMeta ? 'capture.json feedOrder' : 'shortcode pk (no capture.json)';
+
+  // In covers mode the folder holds ONE file per carousel, so the filenames alone can't say a post
+  // was a carousel of 8 — take type/slides/pinned from the sidecar where it exists.
+  if (postMeta) {
+    for (const s of manifest.slots) {
+      const p = postMeta.get(s.shortcode);
+      if (!p) continue;
+      s.type = p.type || s.type;
+      s.items = p.items == null ? s.items : p.items;
+      if (p.pinned) s.pinned = true;
+    }
+  }
 
   // Absolute paths so the agent can hand them straight to set_image_fill — the MCP server reads
   // the file itself and runs in this same WSL filesystem, so a Windows Downloads path works with

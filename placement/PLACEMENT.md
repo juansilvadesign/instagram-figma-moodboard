@@ -89,6 +89,18 @@ differ, so always navigate by name+size.
    `image_versions2` (resolver gotcha #9), so the v2 crawler should just save it.
 6. **`set_image_fill` reports the IMAGE's dimensions**, not the node's — `"pfp" (720x1280)` is a
    720×1280 source in a 150×150 slot, not a resized node.
+7. **Never blank a text node to `—` or `""` inside a hug-width auto-layout frame — it collapses
+   the frame and turns its siblings VERTICAL.** Live 2026-07-17: the `bio` frame HUGS its widest
+   child; the display-name node is **FILL**-width (so it does not drive the hug) while bio/link are
+   HUG. Setting bio+link to `—` shrank the frame to a dash's width (~10px), which squeezed the
+   FILL-width name to 10px → **"Seb 👋" rendered one character per line**. Replacement text must
+   carry real width. Don't leave the template's placeholder either — that makes the board *assert*
+   mkbhd's 4M followers for someone else's profile. Write something true and wide instead: capture
+   provenance (`Captured <date> · N posts`) in the bio, and the real `instagram.com/<handle>` in
+   the link.
+8. **Write nothing you don't know.** `capture.json` leaves `biography`/`external_url`/counts null.
+   A wrong value is worse than an empty one — a moodboard that claims another account's follower
+   count is a lie you'll later believe.
 
 ## capture.json (written by the crawler, v0.4.0)
 
