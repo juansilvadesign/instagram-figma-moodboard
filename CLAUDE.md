@@ -268,9 +268,23 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     root and still uniquifies.
 24. **Wire a new collector into EVERY ingest path, not just the obvious one.** v0.4.1 added the
     profile tap to `ingestResponseText` (the network tap) but not to `scanInlineScripts` (the
-    server-embedded JSON) — and a freshly-loaded profile page **embeds** its profile payload
-    instead of fetching it, so the header came back null on the first real run despite the code
-    being "done". `collectMedia` has two call sites; both need `putProfile`.
+    server-embedded JSON). `collectMedia` has two call sites; both need `putProfile`. (Necessary
+    but NOT the cause of the null header — see #25.)
+25. **`/api/graphql` is a THIRD data endpoint, and `TAP_URL_RE` was deaf to it until 2026-07-17.**
+    `/\/graphql\/query|\/api\/v1\//` matches neither `/api/graphql`… and a profile route fires
+    **five POSTs** to exactly that URL (probe, route `comet.igweb.PolarisProfilePostsTabRoute`).
+    Two rounds were spent "fixing" `looksLikeProfile` when the matcher was correct and simply
+    **never being fed**. **Before tuning a matcher, prove the data reaches it.** The endpoint list
+    is the first thing to check when a tap comes back empty.
+26. **A profile page SSR-embeds the VIEWER, not the profile being viewed.** Probe 2026-07-17: the
+    only profile-shaped object in `@solarity.studio`'s embedded JSON was **`jaypy06` — the logged-in
+    user's own account**, bio and all (a thin 37-key record, no counts). The one object whose
+    `username` matched the handle was an ad/deeplink blob (`campaign_id`/`igshid`/`gclid`) with no
+    bio or counts. So **the embedded scan can never supply the target profile** — it comes over the
+    network. This is exactly why `_profileCache` is keyed by **username** and read back by exact
+    handle (#22): a "first seen" or "richest wins" rule would have written **Juan's own bio and
+    identity onto someone else's moodboard**. That risk was real, not hypothetical — the wrong
+    object is sitting right there in the page.
 
 ## Validate / test
 
