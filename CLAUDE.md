@@ -12,7 +12,7 @@ MVP is **single-post capture**: an injected button on any Instagram post downloa
 media — image, video, or every item of a carousel — to `Downloads/instagram-captures/`, named
 `<username>-<shortcode>[-NN].<ext>`. The v2 (full-profile → Figma moodboard via the talk-to-figma
 MCP) is the tool's real differentiator and is **COMPLETE + verified end-to-end 2026-07-17**: the
-fixed "Capture profile" button crawls the grid into `Downloads/instagram-captures/<handle>/`
+fixed "Capture profile" button crawls the grid into `Downloads/instagram-captures/<handle>/<date>/`
 (24 covers + `_avatar.jpg` + `capture.json`), and the agent places that folder into a dated Figma
 Section — proven on a real profile (`@solarity.studio`: 24/24 posts, 0 skipped, pinned post at
 slot 0, zero ffmpeg). Recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
@@ -257,6 +257,20 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     without that key would eventually put a stranger's bio on the board. Same reasoning as gotcha
     #18 (the media cache holds more than the grid). **A wrong value is worse than an empty one** —
     every profile field stays null unless it came from that handle's own payload.
+
+23. **One capture = one `<handle>/<date>/` folder — the date is load-bearing.** v0.4.0 wrote to
+    `instagram-captures/<handle>/` with no date, and the second live run (2026-07-17) accumulated
+    **25 ` (1)` duplicates** because media downloads `uniquify`. Worse, a capture on a LATER day
+    would have silently overwritten the previous one — destroying the accumulating archive this
+    tool exists to build. Dated folders fix both and mirror the Figma contract (one Section per
+    `@handle · date`), which also makes `conflictAction: 'overwrite'` safe *within* a capture:
+    same handle + same day = the same content. The single-post button still writes to the shared
+    root and still uniquifies.
+24. **Wire a new collector into EVERY ingest path, not just the obvious one.** v0.4.1 added the
+    profile tap to `ingestResponseText` (the network tap) but not to `scanInlineScripts` (the
+    server-embedded JSON) — and a freshly-loaded profile page **embeds** its profile payload
+    instead of fetching it, so the header came back null on the first real run despite the code
+    being "done". `collectMedia` has two call sites; both need `putProfile`.
 
 ## Validate / test
 

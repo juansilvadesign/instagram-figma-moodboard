@@ -1,13 +1,16 @@
-# Instagram Moodboard Capture — single-post MVP
+# Instagram → Figma Moodboard Capture
 
-One-click download of an Instagram post's media from a **logged-in Chrome profile**. An injected
-button on each post saves its image, video, or full carousel to
-`Downloads/instagram-captures/<username>-<shortcode>[-NN].<ext>`.
+Capture Instagram inspiration from a **logged-in Chrome profile**, two ways:
 
-This is the **MVP** of the [Instagram → Figma moodboard idea](../../ideas/instagram-figma-moodboard.md)
-— the v2 (capture a whole profile → auto-place into the Figma Instagram-UI template via
-talk-to-figma) is spec'd there and gated on its B1 blocker. Working conventions + gotchas for
-sessions in this repo: [`CLAUDE.md`](CLAUDE.md).
+- **Single post** — an injected button on any post saves its image, video, or full carousel to
+  `Downloads/instagram-captures/<username>-<shortcode>[-NN].<ext>`.
+- **Whole profile (v2)** — a "Capture profile" button saves the grid's most recent 24 covers +
+  `capture.json` to `Downloads/instagram-captures/<handle>/<date>/`, which a Claude agent then
+  auto-places into a Figma Instagram-UI template as a dated moodboard Section.
+
+**Both halves ran end-to-end 2026-07-17.** Idea/spec history:
+[the idea note](../../ideas/instagram-figma-moodboard.md). Working conventions + the hard-won
+gotchas: [`CLAUDE.md`](CLAUDE.md). Figma recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
 ## Install (Windows Chrome, extension folder lives in WSL)
 
@@ -70,7 +73,7 @@ point, same as the twitter-video-downloader sibling.
 
 ```bash
 node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk)
-                          # + the v2 placement manifest — 80 tests
+                          # + the v2 placement manifest + the profile crawler — 106 tests
 node --check extension/*.js placement/*.cjs
 ```
 
@@ -98,7 +101,7 @@ untrusted source is confirmed by pk, while a trusted live-API single image is no
 > pipeline works end-to-end.
 
 On a profile page a fixed **"Capture profile"** button appears (top-right). It scrolls the grid,
-saves the most recent **24** posts' **covers** into `Downloads/instagram-captures/<handle>/`, and
+saves the most recent **24** posts' **covers** into `Downloads/instagram-captures/<handle>/<date>/`, and
 writes a **`capture.json`** the placement engine reads. **Shift-click** to save every carousel
 slide instead of covers only. Pacing is randomized 5–10s per post.
 
@@ -110,7 +113,7 @@ the tool performs is the downloads themselves.
 
 - [ ] Button appears on `/<handle>/`, and **disappears** when you SPA-navigate to a post/feed
 - [ ] Toast counts up (`Reading grid… n/24` → `Captured n of 24…`); ~2–4 min at 5–10s pacing
-- [ ] `Downloads/instagram-captures/<handle>/` holds ~24 covers + `_avatar.jpg` + `capture.json`
+- [ ] `Downloads/instagram-captures/<handle>/<date>/` holds ~24 covers + `_avatar.jpg` + `capture.json`
 - [ ] **Covers only** — a carousel contributes exactly ONE file, and a reel's file is a **`.jpg`
       poster, not an `.mp4`**
 - [ ] `capture.json` → `posts[0]` is the **pinned** post if the grid shows one, with
@@ -126,7 +129,7 @@ the tool performs is the downloads themselves.
 - [ ] **Shift-click** → every carousel slide lands, suffixed `-01…-NN`
 - [ ] Re-running overwrites `capture.json` (not `capture (1).json`) — data: URL downloads are the
       likeliest thing to be blocked here; check the SW console if it's missing
-- [ ] Then place it: `node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures/<handle> --date <today>`
+- [ ] Then place it: `node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures/<handle>/<date>`
 
 ### Agent placement engine (built + live-verified 2026-07-17)
 
