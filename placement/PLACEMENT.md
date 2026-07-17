@@ -1,0 +1,129 @@
+# Placement engine — agent recipe (v2)
+
+How a capture folder becomes a dated moodboard Section in the Figma IG-UI template.
+
+`manifest.cjs` decides **what goes where** (pure, tested). This file is the **how** — the
+talk-to-figma MCP sequence the agent runs, because talk-to-figma is agent-driven and can't be
+called from a script. Verified live end-to-end 2026-07-17.
+
+## Runtime preconditions
+
+1. The **bun socket server** on port 3055 (`ss -ltn | grep 3055`). It has no channel-listing
+   endpoint and no log — **ask the user for the channel name**, you cannot discover it.
+2. The **fork's dev plugin** open in Figma — "Talk to Figma (fork)". The fork and the community
+   plugin share a manifest id and look identical in the plugin list; only the fork has
+   `set_image_fill`. If it's the wrong one, the grid step fails and nothing before it does.
+3. `join_channel(<name>)`.
+
+## The capture folder
+
+Read the extension's output **in place** at `/mnt/c/Users/<user>/Downloads/instagram-captures/`.
+WSL mounts the Windows filesystem, and the MCP server (which reads `imagePath` itself) runs in
+that same filesystem — so there is **no copy step and no native host**. The plan's old
+"Windows→WSL copy mechanism" question is void.
+
+`captures/` is now scratch for **derived** artifacts only (ffmpeg posters), not a copy target.
+It stays gitignored.
+
+## Steps
+
+```
+node placement/manifest.cjs <capture-folder> --date YYYY-MM-DD   # → JSON on stdout
+```
+
+Then, per the manifest:
+
+1. **Dedup** — `get_document_info`; if a Section named `manifest.sectionName`
+   (`@<handle> · <date>`) exists, **BLOCK** — no duplicate same-day capture of a profile.
+2. **`create_section`** at a free spot, `name = manifest.sectionName`. Size the clone + ~40px
+   margin (template is 1350×3214 at absolute 0,0 → e.g. 1430×3294).
+3. **`clone_node(<template>)`** at section origin + 40. Never recreate the UI.
+4. **`set_parent(clone, section)`** — preserves absolute position.
+5. **`rename_node(clone, manifest.sectionName)`** — the clone inherits the template's name.
+6. **`scan_nodes_by_types(clone, ["FRAME"])`** — cloning reassigns every descendant id, so
+   locate slots *inside the clone*:
+   - the frame named **`grid`** → its **children are the 24 slots, already in feed order**
+     (row-major). No geometry sort needed.
+   - the frame named **`pfp`** **sized 150×150** → the avatar. ⚠️ see gotcha 1.
+7. **`set_image_fill(gridChild[i], manifest.slots[i].path, scaleMode: "FILL")`** — `slot` is the
+   child index. FILL center-crops a non-square source into the square tile, like Instagram.
+   Parallel calls are fine (verified 24 at once, no races).
+8. **`set_image_fill(pfp, <avatar>, "FILL")`**.
+9. **`set_multiple_text_contents(clone, [...])`** for the header — ids from
+   `scan_nodes_by_types(<clone hero>, ["TEXT"])`.
+
+## Template map (live 2026-07-17 — re-verify before trusting)
+
+The template was rebuilt with auto-layout, which **reassigned every node id and resized every
+tile**; the 2026-06-24 map in the idea note is dead. Ids below are the *template's* — a clone's
+differ, so always navigate by name+size.
+
+| What | Name | Size | Notes |
+|---|---|---|---|
+| Root | `Instagram - Claude Test` | 1350×3214 | at absolute (0,0) |
+| Post grid | `grid` | 938×2508 | 24 children, row-major, 4px gap |
+| Post slot ×24 | `cover` | **310×310** | leaf frame, `IMAGE`/`FILL` fill, no children |
+| Avatar | `pfp` | **150×150** | in `hero > story > old-ring`; cornerRadius 75 |
+| Highlight ×8 | `image` | 76×76 | in `highlights-bar`; **not placed yet** |
+| Handle | `username` (TEXT) | — | |
+| Stats | `1,861`/`posts`, `4M`/`followers`, `454`/`following` | — | count and label are **separate** nodes |
+| Name / bio / link | `Marques Brownlee` / `I promise…` / `mkbhd.com` | — | |
+
+## Gotchas
+
+1. **Two nodes are named `pfp`** — the 150×150 avatar and a **24×24 one in the navbar**. Name
+   alone hits the wrong one; match on size (or ancestor `hero`).
+2. **`cover` is ambiguous too** — the 24 grid slots *and* the 8 highlight covers (83×86) share
+   the name. Reach the grid slots via the `grid` frame's children, never a name scan.
+3. **The grid is auto-layout wrap** — resizing tiles reflows it. At 310px + 4px gap it hugged to
+   938 and kept 3×8; a wider tile would drop to 2 columns and silently break the 24-slot
+   assumption. Re-read the grid after any template edit.
+4. **Mixed-font text nodes throw** `loadFontAsync: Cannot unwrap symbol` on
+   `set_multiple_text_contents`. This bit the 2026-07-16 rehearsal when one node held
+   `"1,861 posts"` (bold number + regular label). The rework **split them into single-font
+   nodes**, so all 7 header writes now pass. If a future template merges them again, load each
+   run's font per node or re-split.
+5. **A video cover can't be an image fill** — the manifest flags `needsPoster` and the CLI
+   extracts one with ffmpeg (`-vf thumbnail`, not frame 0 — reels often open black). Only
+   hand-captured folders need this: Instagram's JSON already carries the poster URL in
+   `image_versions2` (resolver gotcha #9), so the v2 crawler should just save it.
+6. **`set_image_fill` reports the IMAGE's dimensions**, not the node's — `"pfp" (720x1280)` is a
+   720×1280 source in a 150×150 slot, not a resized node.
+
+## capture.json (written by the crawler, v0.4.0)
+
+A profile crawl writes `capture.json` next to the media. **Read it and pass `posts[].shortcode`
+as `feedOrder`** — it is authoritative over the pk fallback, because Instagram pins posts (live:
+`@solarity.studio`'s pinned post is its OLDEST, at grid slot 1 — pk order buries it last).
+
+```jsonc
+{
+  "handle": "solarity.studio",
+  "captured_at": "2026-07-17",
+  "mode": "covers",            // or "full" (shift-click) — every carousel slide
+  "profile": {                 // display_name/avatar_url may be null — see below
+    "display_name": "Solarity", "avatar_file": "_avatar.jpg",
+    "biography": null, "followers": null, "following": null, "posts_count": null
+  },
+  "posts": [                   // FEED ORDER, pinned first
+    { "shortcode": "DEU1LbwxhF0", "type": "carousel", "items": 8,
+      "pinned": true, "cover": "solarity.studio-DEU1LbwxhF0.jpg" }
+  ],
+  "skipped": []
+}
+```
+
+- `_avatar.jpg` is the avatar (named so `manifest.cjs` can't parse it as a post — gotcha #20).
+- `type`/`items` come from here, not the filenames: in `covers` mode a carousel leaves one file
+  behind, so the folder alone can't tell you it was a carousel of 8.
+
+## Not built yet
+
+- **Profile header text** — `biography`, `external_url` and the follower/following/post counts are
+  **not captured**: the tap only keeps objects that `looksLikeMedia`, and the profile payload isn't
+  one. `display_name`/`avatar_url` ride along on `media.user` (**shape unverified** — treat as
+  optional). Write only non-null fields and leave the template's own text otherwise. Fixing this
+  properly = teach inject.js to cache the profile payload it already sees (no extra request).
+- **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
+  Belongs in the template as a component, not as agent-created nodes.
+- **Highlights** (8 × 76×76) and the `Followed by` row — mapped, not wired.
