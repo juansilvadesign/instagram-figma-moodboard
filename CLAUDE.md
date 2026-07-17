@@ -54,7 +54,9 @@ extension/
   content.css      button/toast styles
   background.js    thin SW: chrome.downloads only
   inject.js        in-page media resolver (MAIN world, standalone): fetch/XHR tap → embedded
-                   JSON scan → fiber walk; exports for Node tests
+                   JSON scan → fiber walk; exports for Node tests. The tap fills TWO caches from
+                   one walk — `_mediaCache` (shortcode → raw media) and `_profileCache`
+                   (username → raw profile payload: bio/link/counts, for the v2 crawl header).
 placement/
   manifest.cjs     v2, agent-side: capture folder → ordered placement manifest (which file lands
                    in which grid slot). Pure half exported for tests; CLI does the I/O + ffmpeg
@@ -247,6 +249,14 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     never by that field — keep it that way; `cover` is advisory. (Same family as gotcha #14:
     Instagram's metadata lies, the bytes are the truth.) If a REAL `.heic` ever lands, Figma's
     `createImage` can't place it — that would need a conversion step.
+
+22. **Cache anything the page hands you BY OWNER, and read it back by exact key.** The v0.4.1
+    profile tap caches the profile payload (bio/link/counts) the page fetches for itself — zero
+    extra requests. But a page also carries **suggested/related users**, so the cache is keyed by
+    **username** and the crawler looks up its exact handle. A "richest wins" or "first seen" rule
+    without that key would eventually put a stranger's bio on the board. Same reasoning as gotcha
+    #18 (the media cache holds more than the grid). **A wrong value is worse than an empty one** —
+    every profile field stays null unless it came from that handle's own payload.
 
 ## Validate / test
 

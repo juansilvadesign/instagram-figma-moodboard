@@ -115,9 +115,13 @@ the tool performs is the downloads themselves.
       poster, not an `.mp4`**
 - [ ] `capture.json` → `posts[0]` is the **pinned** post if the grid shows one, with
       `"pinned": true`, and `posts[]` order matches the grid top-to-bottom
-- [ ] `capture.json` → `profile.display_name` / `avatar_url` are populated (**unverified
-      assumption**: that `media.user` carries `full_name`/`profile_pic_url`. If they're null, the
-      crawl still works — the header just isn't captured)
+- [ ] `capture.json` → `profile.display_name` / `avatar_url` populated ✅ verified 07-17 ("Seb 👋")
+- [ ] **v0.4.1 — `capture.json` → `profile.biography` / `external_url` / `followers` / `following`
+      / `posts_count` populated**, and the console logs `[IGFM] profile payload: hit (N cached)`.
+      A `miss` means the page never fetched the payload into the tap — reload the profile tab and
+      re-run. Null fields are safe (placement just won't write them), but they're the whole point
+      of v0.4.1, so a persistent miss is worth chasing. **Cross-check the numbers against the real
+      profile** — they must be that handle's, not a suggested user's (gotcha #22)
 - [ ] No file from a profile you didn't capture (gotcha #18 — the tap also caches suggested posts)
 - [ ] **Shift-click** → every carousel slide lands, suffixed `-01…-NN`
 - [ ] Re-running overwrites `capture.json` (not `capture (1).json`) — data: URL downloads are the

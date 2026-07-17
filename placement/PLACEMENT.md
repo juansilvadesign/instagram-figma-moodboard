@@ -50,7 +50,16 @@ Then, per the manifest:
    Parallel calls are fine (verified 24 at once, no races).
 8. **`set_image_fill(pfp, <avatar>, "FILL")`**.
 9. **`set_multiple_text_contents(clone, [...])`** for the header — ids from
-   `scan_nodes_by_types(<clone hero>, ["TEXT"])`.
+   `scan_nodes_by_types(<clone hero>, ["TEXT"])`. Write from `capture.json`'s `profile`, and see
+   gotchas 7–8: **never leave a placeholder, never invent a value, never blank to `—`**. Counts are
+   pre-formatted the way Instagram renders them (`4M`, `12.3K`, `1,861`) — a raw `4000000` will not
+   fit the 21px slot. If `biography`/`external_url` are null (the page never fetched the payload),
+   write capture provenance + `instagram.com/<handle>` instead of mkbhd's copy.
+10. **`delete_node(<clone's highlights-bar>)`** — we capture no highlights, so the 8 rings would
+    otherwise show the template's mkbhd placeholders on someone else's board. Deleting the row is
+    honest and the auto-layout closes the gap (the grid moves up). Verified live 2026-07-17.
+    ⚠️ Target the **clone's** row, not the template's — check the `absoluteBoundingBox` is inside
+    the new Section's x-range before deleting.
 
 ## Template map (live 2026-07-17 — re-verify before trusting)
 
@@ -113,9 +122,11 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
   "handle": "solarity.studio",
   "captured_at": "2026-07-17",
   "mode": "covers",            // or "full" (shift-click) — every carousel slide
-  "profile": {                 // display_name/avatar_url may be null — see below
-    "display_name": "Solarity", "avatar_file": "_avatar.jpg",
-    "biography": null, "followers": null, "following": null, "posts_count": null
+  "profile": {                 // any field may be null — write only what is non-null
+    "username": "solarity.studio", "display_name": "Seb 👋", "is_verified": true,
+    "avatar_file": "_avatar.jpg", "avatar_url": "https://…",
+    "biography": "…", "external_url": "https://…",
+    "posts_count": 27, "followers": 4000000, "following": 454   // raw ints — format for display
   },
   "posts": [                   // FEED ORDER, pinned first
     { "shortcode": "DEU1LbwxhF0", "type": "carousel", "items": 8,
@@ -131,11 +142,12 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
 
 ## Not built yet
 
-- **Profile header text** — `biography`, `external_url` and the follower/following/post counts are
-  **not captured**: the tap only keeps objects that `looksLikeMedia`, and the profile payload isn't
-  one. `display_name`/`avatar_url` ride along on `media.user` (**shape unverified** — treat as
-  optional). Write only non-null fields and leave the template's own text otherwise. Fixing this
-  properly = teach inject.js to cache the profile payload it already sees (no extra request).
 - **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
   Belongs in the template as a component, not as agent-created nodes.
-- **Highlights** (8 × 76×76) and the `Followed by` row — mapped, not wired.
+- **Highlights** — deliberately **deleted** rather than filled (step 10). Wiring them for real
+  means the highlights tray, a different API surface the tap may never see — it would need its own
+  probe first, like the profile crawl did.
+- **The `Followed by` row** — still the template's `kurzgesagt`. Low-salience, but it is
+  placeholder data; blank or delete it if it ever reads as fact.
+- **Overflow past 24 posts** — reported in `manifest.overflow`, not placed. A second cloned frame
+  inside the same Section would hold posts 25–48.
