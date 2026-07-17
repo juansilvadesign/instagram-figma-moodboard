@@ -55,11 +55,12 @@ Then, per the manifest:
    pre-formatted the way Instagram renders them (`4M`, `12.3K`, `1,861`) — a raw `4000000` will not
    fit the 21px slot. If `biography`/`external_url` are null (the page never fetched the payload),
    write capture provenance + `instagram.com/<handle>` instead of mkbhd's copy.
-10. **`delete_node(<clone's highlights-bar>)`** — we capture no highlights, so the 8 rings would
-    otherwise show the template's mkbhd placeholders on someone else's board. Deleting the row is
-    honest and the auto-layout closes the gap (the grid moves up). Verified live 2026-07-17.
-    ⚠️ Target the **clone's** row, not the template's — check the `absoluteBoundingBox` is inside
-    the new Section's x-range before deleting.
+10. **`delete_node` the clone's `highlights-bar` AND its `friends` row** — we capture neither, so
+    both would otherwise assert the template's mkbhd placeholders about someone else's profile
+    (8 rings labelled "Frisbee"; "Followed by kurzgesagt"). Deleting is honest and the auto-layout
+    closes the gaps. Verified live 2026-07-17.
+    ⚠️ Target the **clone's** nodes, not the template's — check each `absoluteBoundingBox` falls
+    inside the new Section's x-range before deleting.
 
 ## Template map (live 2026-07-17 — re-verify before trusting)
 
@@ -140,6 +141,20 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
 - `type`/`items` come from here, not the filenames: in `covers` mode a carousel leaves one file
   behind, so the folder alone can't tell you it was a carousel of 8.
 
+## The header (v0.4.3 — fully captured, verified live 2026-07-17)
+
+`capture.json`'s `profile` now carries the real thing, at **zero extra requests** — the tap reads
+the payload the page fetches for itself over `/api/graphql`. Verified on `@solarity.studio`:
+`biography` (multi-line, emoji), `followers: 27692`, `following: 360`, `posts_count: 27` — the
+numbers cross-checked exactly against an independent `web_profile_info` call.
+
+- **Format the counts** as Instagram does (`crawler.js` `formatCount`): `27692` → **27.7K**. A raw
+  int will not fit the 21px slot.
+- **`external_url: ""` is a real answer** (the profile has no link), distinct from `null` (we never
+  saw the payload). Writing `""` is correct and the line simply disappears — safe here only because
+  a real multi-line bio keeps the hug-width frame open (gotcha 7).
+- A **multi-line bio** (`\n`, emoji) reflows the single-line slot cleanly — verified.
+
 ## Not built yet
 
 - **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
@@ -147,7 +162,5 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
 - **Highlights** — deliberately **deleted** rather than filled (step 10). Wiring them for real
   means the highlights tray, a different API surface the tap may never see — it would need its own
   probe first, like the profile crawl did.
-- **The `Followed by` row** — still the template's `kurzgesagt`. Low-salience, but it is
-  placeholder data; blank or delete it if it ever reads as fact.
 - **Overflow past 24 posts** — reported in `manifest.overflow`, not placed. A second cloned frame
   inside the same Section would hold posts 25–48.
