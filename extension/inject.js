@@ -511,7 +511,11 @@
       scannedScripts.add(s);
       scanned++;
       try {
-        for (const payload of parseJsonChunks(s.textContent)) collectMedia(payload, cachePut, { ms: 150 });
+        // profilePut MUST be passed here too, not just on the network tap: a freshly-loaded
+        // profile page server-EMBEDS its own profile payload instead of fetching it, so this is
+        // the only path that ever sees bio/counts on a cold load. Missing it here is why the
+        // v0.4.1 header came back null on the first real run (2026-07-17).
+        for (const payload of parseJsonChunks(s.textContent)) collectMedia(payload, cachePut, { ms: 150 }, profilePut);
       } catch { /* skip blob */ }
     }
     return scanned;
