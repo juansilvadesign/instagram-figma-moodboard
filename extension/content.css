@@ -42,7 +42,7 @@
 .igfm-profile-btn {
   position: fixed;
   right: 24px;
-  bottom: 24px;
+  top: 24px;
   z-index: 2147483000;
   display: inline-flex;
   align-items: center;
