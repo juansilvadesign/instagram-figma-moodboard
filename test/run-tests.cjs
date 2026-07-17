@@ -134,9 +134,14 @@ const API_V1_VIDEO = {
   ],
 };
 
-t('api/v1 video: prefers video_versions over the poster, largest first', () => {
+t('api/v1 video: prefers video_versions over the poster, largest first — and keeps the poster', () => {
   const m = R.normalizeApiV1Item(API_V1_VIDEO);
-  assert.deepEqual(m.items, [{ type: 'video', url: 'https://cdn.example/vid-1080.mp4?sig=2', width: 1080 }]);
+  // The video still wins for the FILE (gotcha #9). Since v0.4.0 the poster rides along instead of
+  // being discarded, so the profile crawl can place a still without ffmpeg.
+  assert.deepEqual(m.items, [{
+    type: 'video', url: 'https://cdn.example/vid-1080.mp4?sig=2', width: 1080,
+    poster: 'https://cdn.example/poster.jpg',
+  }]);
 });
 
 t('api/v1 carousel: one item per child, feed order preserved', () => {
@@ -184,9 +189,12 @@ t('graphql image: largest display resource', () => {
   assert.deepEqual(m.items, [{ type: 'image', url: 'https://cdn.example/gql-1080.jpg', width: 1080 }]);
 });
 
-t('graphql video: video_url wins over poster resources', () => {
+t('graphql video: video_url wins over poster resources — and keeps the poster', () => {
   const m = R.normalizeShortcodeMedia(GQL_VIDEO);
-  assert.deepEqual(m.items, [{ type: 'video', url: 'https://cdn.example/gql-vid.mp4', width: 720 }]);
+  assert.deepEqual(m.items, [{
+    type: 'video', url: 'https://cdn.example/gql-vid.mp4', width: 720,
+    poster: 'https://cdn.example/gql-poster.jpg', // from display_resources, not image_versions2
+  }]);
 });
 
 t('graphql sidecar: one item per edge node', () => {
@@ -741,6 +749,291 @@ ta('escalate: pk info fails → graphql attempted → still partial floor kept, 
     assert.ok(calls.some((u) => u.includes('/api/v1/media/5/info/')), 'pk info attempted');
     assert.ok(calls.some((u) => u.includes('/graphql/query')), 'graphql attempted after pk info failed');
   } finally { restoreFetch(); }
+});
+
+// ---- profile crawler (extension/crawler.js, v2) -----------------------------
+
+require('../extension/crawler.js'); // classic script — attaches IGFM_CRAWLER to globalThis
+const C = globalThis.IGFM_CRAWLER;
+const P = require('../placement/manifest.cjs'); // crawler↔manifest handoff is asserted below
+
+const vid = (over) => ({
+  username: 'studio.xyz', shortcode: 'DY_HBkqxebO', expectedCount: 1, pinned: false,
+  items: [{ type: 'video', url: 'https://cdn/x/v.mp4', poster: 'https://cdn/x/p.jpg' }], ...over,
+});
+const carousel = (n) => ({
+  username: 'studio.xyz', shortcode: 'DYw5KdMDH6a', expectedCount: n, pinned: false,
+  items: Array.from({ length: n }, (_, i) => ({ type: 'image', url: `https://cdn/x/${i + 1}.jpg` })),
+});
+
+t('codesFromHrefs keeps DOM order and dedups', () => {
+  assert.deepEqual(
+    C.codesFromHrefs(['/p/AAAAAAAAAAA/', '/studio.xyz/p/BBBBBBBBBBB/', '/p/AAAAAAAAAAA/', '/reel/CCCCCCCCCCC/']),
+    ['AAAAAAAAAAA', 'BBBBBBBBBBB', 'CCCCCCCCCCC'],
+  );
+});
+
+t('codesFromHrefs rejects the /reels/audio/ decoys (gotcha #15)', () => {
+  assert.deepEqual(C.codesFromHrefs(['/reels/audio/1975396383375922/', '/p/AAAAAAAAAAA/']), ['AAAAAAAAAAA']);
+});
+
+t('profileHandleFromPath accepts a profile and rejects everything else', () => {
+  assert.equal(C.profileHandleFromPath('/solarity.studio/'), 'solarity.studio');
+  assert.equal(C.profileHandleFromPath('/p/DYw5KdMDH6a/'), null);       // a post
+  assert.equal(C.profileHandleFromPath('/explore/'), null);             // reserved
+  assert.equal(C.profileHandleFromPath('/solarity.studio/reels/'), null); // tab, not the grid
+  assert.equal(C.profileHandleFromPath('/'), null);
+});
+
+t('planPost covers-only takes the cover and NO -NN suffix', () => {
+  // A '-01' here would be re-read by manifest.cjs as a post whose shortcode ends in an index.
+  const plan = C.planPost(carousel(8), { full: false });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].filename, 'instagram-captures/studio.xyz-DYw5KdMDH6a.jpg');
+});
+
+t('planPost covers-only uses a video POSTER, never the .mp4', () => {
+  // A Figma image fill can't hold an .mp4; the poster is already in the data, so no ffmpeg.
+  const plan = C.planPost(vid(), { full: false });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].url, 'https://cdn/x/p.jpg');
+  assert.equal(plan[0].filename, 'instagram-captures/studio.xyz-DY_HBkqxebO.jpg');
+});
+
+t('planPost --full keeps every slide, suffixed', () => {
+  const plan = C.planPost(carousel(3), { full: true });
+  assert.equal(plan.length, 3);
+  assert.equal(plan[0].filename, 'instagram-captures/studio.xyz-DYw5KdMDH6a-01.jpg');
+  assert.equal(plan[2].filename, 'instagram-captures/studio.xyz-DYw5KdMDH6a-03.jpg');
+});
+
+t('planPost --full on a video keeps the .mp4', () => {
+  assert.equal(C.planPost(vid(), { full: true })[0].url, 'https://cdn/x/v.mp4');
+});
+
+t('intoHandleFolder nests one capture per folder', () => {
+  const plan = C.intoHandleFolder(C.planPost(carousel(2), { full: false }), 'solarity.studio');
+  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/studio.xyz-DYw5KdMDH6a.jpg');
+});
+
+t('planAvatar cannot be mistaken for a post by the placement parser', () => {
+  const plan = C.planAvatar('https://cdn/x/avatar.jpg?ig_cache=1', 'solarity.studio');
+  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/_avatar.jpg');
+  // The load-bearing half: manifest.cjs must SKIP it. '<handle>-avatar.jpg' would parse as a
+  // post with shortcode "avatar" and take a grid slot.
+  assert.equal(P.parseCaptureFilename('_avatar.jpg'), null);
+});
+
+t('captureEntry records type/slides/pinned even when only the cover is saved', () => {
+  const m = { ...carousel(8), pinned: true };
+  const e = C.captureEntry(m, C.planPost(m, { full: false }));
+  assert.equal(e.type, 'carousel'); // still a carousel though 1 file landed
+  assert.equal(e.items, 8);
+  assert.equal(e.pinned, true);
+  assert.equal(e.cover, 'studio.xyz-DYw5KdMDH6a.jpg');
+});
+
+t('buildCaptureJson emits posts in feed order for buildManifest({feedOrder})', () => {
+  const cap = C.buildCaptureJson({
+    handle: 'solarity.studio', date: '2026-07-17', full: false,
+    entries: [{ shortcode: 'DEU1LbwxhF0', pinned: true }, { shortcode: 'DXWTEl3Gvky', pinned: false }],
+  });
+  assert.equal(cap.handle, 'solarity.studio');
+  assert.equal(cap.mode, 'covers');
+  assert.deepEqual(cap.posts.map((p) => p.shortcode), ['DEU1LbwxhF0', 'DXWTEl3Gvky']);
+});
+
+t('the pinned post survives the crawler → manifest handoff (live @solarity.studio case)', () => {
+  // DEU1LbwxhF0 is the OLDEST of the two (pk rank 12/12 live) but sits at grid slot 1 because it
+  // is pinned. pk order would bury it; capture.json's feedOrder must win.
+  const cap = C.buildCaptureJson({
+    handle: 'solarity.studio', date: '2026-07-17',
+    entries: [{ shortcode: 'DEU1LbwxhF0', pinned: true }, { shortcode: 'DXWTEl3Gvky', pinned: false }],
+  });
+  const m = P.buildManifest({
+    files: ['solarity.studio-DXWTEl3Gvky.jpg', 'solarity.studio-DEU1LbwxhF0.jpg', '_avatar.jpg', 'capture.json'],
+    handle: cap.handle, date: cap.captured_at,
+    feedOrder: cap.posts.map((p) => p.shortcode),
+  });
+  assert.equal(m.slots.length, 2); // _avatar.jpg + capture.json ignored
+  assert.equal(m.slots[0].shortcode, 'DEU1LbwxhF0'); // pinned, oldest, still slot 0
+});
+
+t('nextDelayMs stays inside the 5–10s band', () => {
+  assert.equal(C.nextDelayMs(() => 0), 5000);
+  assert.equal(C.nextDelayMs(() => 1), 10000);
+  assert.equal(C.nextDelayMs(() => 0.5), 7500);
+});
+
+t('profileFromMedia degrades to nulls rather than inventing header text', () => {
+  assert.equal(C.profileFromMedia(null), null);
+  const p = C.profileFromMedia({ username: 'solarity.studio', full_name: 'Solarity' });
+  assert.equal(p.display_name, 'Solarity');
+  assert.equal(p.biography, null); // the tap keeps media, not the profile payload
+  assert.equal(p.followers, null);
+});
+
+// ---- resolver: poster + pinned (v0.4.0, feeds the crawler) ------------------
+
+t('normalizeApiV1Item carries a video POSTER (no ffmpeg needed on the crawl path)', () => {
+  const m = R.normalizeApiV1Item({
+    code: 'DW3hRN6iXAK', media_type: 2, product_type: 'clips',
+    user: { username: 'solarity.studio', full_name: 'Solarity' },
+    video_versions: [{ url: 'https://cdn/v.mp4', width: 720 }],
+    image_versions2: { candidates: [{ url: 'https://cdn/poster.jpg', width: 640 }] },
+  });
+  assert.equal(m.items[0].type, 'video');
+  assert.equal(m.items[0].url, 'https://cdn/v.mp4');   // gotcha #9: video still wins for the file
+  assert.equal(m.items[0].poster, 'https://cdn/poster.jpg');
+  assert.equal(m.user.full_name, 'Solarity');
+});
+
+t('normalizeApiV1Item reads timeline_pinned_user_ids (probe-verified field)', () => {
+  const base = { code: 'DEU1LbwxhF0', media_type: 1, image_versions2: { candidates: [{ url: 'https://cdn/i.jpg', width: 9 }] } };
+  assert.equal(R.normalizeApiV1Item({ ...base, timeline_pinned_user_ids: ['62804501366'] }).pinned, true);
+  assert.equal(R.normalizeApiV1Item({ ...base, timeline_pinned_user_ids: [] }).pinned, false); // key present, empty
+  assert.equal(R.normalizeApiV1Item(base).pinned, false);                                      // key absent
+});
+
+t('normalizeShortcodeMedia carries poster + pinned too', () => {
+  const m = R.normalizeShortcodeMedia({
+    shortcode: 'DW3hRN6iXAK', is_video: true, video_url: 'https://cdn/v.mp4',
+    display_url: 'https://cdn/poster.jpg', timeline_pinned_user_ids: ['1'],
+  });
+  assert.equal(m.items[0].poster, 'https://cdn/poster.jpg');
+  assert.equal(m.pinned, true);
+});
+
+// ---- placement manifest (placement/manifest.cjs, v2) ------------------------
+
+t('shortcodeToPk matches the pk documented in gotcha #14', () => {
+  // The one shortcode/pk pair this project verified LIVE against /api/v1/media/<pk>/info/.
+  assert.equal(P.shortcodeToPk('DYw5KdMDH6a'), 3904872284116778650n);
+});
+
+t('shortcodeToPk is monotonic (newer post => bigger pk)', () => {
+  assert.ok(P.shortcodeToPk('DYw5KdMDH6a') > P.shortcodeToPk('C9XyZ12abcd'));
+});
+
+t('shortcodeToPk rejects off-alphabet input', () => {
+  assert.equal(P.shortcodeToPk('not a code!'), null);
+  assert.equal(P.shortcodeToPk(''), null);
+});
+
+t('parseCaptureFilename reads a single-item post', () => {
+  assert.deepEqual(P.parseCaptureFilename('bnogmartins-DY_HBkqxebO.mp4'), {
+    username: 'bnogmartins', shortcode: 'DY_HBkqxebO', index: null,
+    ext: 'mp4', type: 'video', filename: 'bnogmartins-DY_HBkqxebO.mp4',
+  });
+});
+
+t('parseCaptureFilename reads a carousel item', () => {
+  const p = P.parseCaptureFilename('studio.xyz-DYw5KdMDH6a-03.jpg');
+  assert.equal(p.username, 'studio.xyz');
+  assert.equal(p.shortcode, 'DYw5KdMDH6a');
+  assert.equal(p.index, 3);
+  assert.equal(p.type, 'image');
+});
+
+t('parseCaptureFilename splits on the FIRST hyphen — shortcodes may contain one', () => {
+  // Usernames can't contain '-' (IG allows [a-z0-9._]); shortcodes can. Splitting on the last
+  // hyphen would yield username 'user.name-DY' and shortcode 'HBkqxebO'.
+  const p = P.parseCaptureFilename('user.name-DY-HBkqxebO.jpg');
+  assert.equal(p.username, 'user.name');
+  assert.equal(p.shortcode, 'DY-HBkqxebO');
+});
+
+t('parseCaptureFilename ignores non-media and malformed names', () => {
+  assert.equal(P.parseCaptureFilename('capture.json'), null);
+  assert.equal(P.parseCaptureFilename('notes.txt'), null);
+  assert.equal(P.parseCaptureFilename('no-extension'), null);
+  assert.equal(P.parseCaptureFilename('nohyphen.jpg'), null);
+});
+
+t('groupPosts folds a carousel into ONE post keyed on its cover', () => {
+  const posts = P.groupPosts([
+    'studio.xyz-AAAAAAAAAAA-02.jpg',
+    'studio.xyz-AAAAAAAAAAA-01.jpg',
+    'studio.xyz-AAAAAAAAAAA-03.mp4',
+  ]);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].type, 'carousel');
+  assert.equal(posts[0].items.length, 3);
+  assert.equal(posts[0].cover.filename, 'studio.xyz-AAAAAAAAAAA-01.jpg'); // -01 is the cover
+});
+
+t('groupPosts folds a LONE indexed file back into its shortcode', () => {
+  // planDownloads only suffixes -NN for a 2+ item carousel, so a lone indexed file means the
+  // '-NN' we stripped was really the shortcode's tail — not a 1-slide carousel.
+  const posts = P.groupPosts(['studio.xyz-ABCdefgh-12.jpg']);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].shortcode, 'ABCdefgh-12');
+  assert.equal(posts[0].type, 'image');
+  assert.equal(posts[0].items.length, 1);
+});
+
+t('orderPosts sorts newest-first and sinks unorderable codes', () => {
+  const posts = P.groupPosts([
+    'u-C9XyZ12abcd.jpg',   // older
+    'u-DYw5KdMDH6a.jpg',   // newer
+    'u-bad code!!.jpg',    // unparseable name -> dropped entirely
+  ]);
+  const ordered = P.orderPosts(posts);
+  assert.equal(ordered[0].shortcode, 'DYw5KdMDH6a');
+  assert.equal(ordered[1].shortcode, 'C9XyZ12abcd');
+});
+
+t('buildManifest caps at the grid size and reports the overflow', () => {
+  const files = [];
+  for (let i = 0; i < 30; i++) files.push(`u-C9XyZ12abc${P.IG_ALPHABET[i]}.jpg`);
+  const m = P.buildManifest({ files, handle: 'u', date: '2026-07-17' });
+  assert.equal(m.slots.length, 24);
+  assert.equal(m.overflow.length, 6);
+  assert.equal(m.unfilled, 0);
+  assert.deepEqual(m.slots.map((s) => s.slot), [...Array(24).keys()]); // contiguous 0..23
+});
+
+t('buildManifest reports unfilled slots for a short capture', () => {
+  const m = P.buildManifest({ files: ['u-DYw5KdMDH6a.jpg'], handle: 'u', date: '2026-07-17' });
+  assert.equal(m.slots.length, 1);
+  assert.equal(m.unfilled, 23);
+  assert.equal(m.overflow.length, 0);
+});
+
+t('buildManifest names the Section as the dedup key', () => {
+  const m = P.buildManifest({ files: ['u-DYw5KdMDH6a.jpg'], handle: 'studio.xyz', date: '2026-07-17' });
+  assert.equal(m.sectionName, '@studio.xyz · 2026-07-17');
+});
+
+t('buildManifest infers the handle from the files', () => {
+  const m = P.buildManifest({ files: ['bnogmartins-DY_HBkqxebO.mp4'], date: '2026-07-17' });
+  assert.equal(m.handle, 'bnogmartins');
+});
+
+t('buildManifest flags a video cover as needing a poster frame', () => {
+  const m = P.buildManifest({ files: ['u-DY_HBkqxebO.mp4'], handle: 'u', date: '2026-07-17' });
+  assert.equal(m.slots[0].needsPoster, true);
+  assert.equal(m.slots[0].type, 'video');
+});
+
+t('buildManifest lets capture.json feed order beat pk order (pinned posts)', () => {
+  // A pinned post sits at the top of the grid while being chronologically older — so the
+  // crawler's recorded feed order must win over the shortcode-derived pk order.
+  const files = ['u-C9XyZ12abcd.jpg', 'u-DYw5KdMDH6a.jpg'];
+  const pk = P.buildManifest({ files, handle: 'u', date: '2026-07-17' });
+  assert.equal(pk.slots[0].shortcode, 'DYw5KdMDH6a'); // newest first by default
+  const feed = P.buildManifest({ files, handle: 'u', date: '2026-07-17', feedOrder: ['C9XyZ12abcd', 'DYw5KdMDH6a'] });
+  assert.equal(feed.slots[0].shortcode, 'C9XyZ12abcd'); // pinned older post takes slot 0
+});
+
+t('buildManifest places a carousel COVER once, not every slide', () => {
+  const m = P.buildManifest({
+    files: ['u-DYw5KdMDH6a-01.jpg', 'u-DYw5KdMDH6a-02.jpg', 'u-DYw5KdMDH6a-03.jpg'],
+    handle: 'u', date: '2026-07-17',
+  });
+  assert.equal(m.slots.length, 1);
+  assert.equal(m.slots[0].file, 'u-DYw5KdMDH6a-01.jpg');
+  assert.equal(m.slots[0].items, 3); // all 3 stay on disk, only the cover is placed
 });
 
 // ---- summary ---------------------------------------------------------------
