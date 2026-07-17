@@ -934,6 +934,50 @@ t('formatCount matches how Instagram renders counts', () => {
 
 // ---- inject.js profile tap (v0.4.1) ----------------------------------------
 
+t('the tap watches /api/graphql — the profile route fires 5 POSTs there', () => {
+  // Probe-verified 2026-07-17: this URL matched NEITHER original branch, so the tap never saw the
+  // profile payload. The matcher was fine all along; it was being starved.
+  assert.ok(I.TAP_URL_RE.test('https://www.instagram.com/api/graphql'), '/api/graphql must be tapped');
+  assert.ok(I.TAP_URL_RE.test('https://www.instagram.com/graphql/query'));
+  assert.ok(I.TAP_URL_RE.test('https://www.instagram.com/api/v1/users/web_profile_info/?username=x'));
+  assert.ok(I.TAP_URL_RE.test('https://www.instagram.com/api/v1/media/123/info/'));
+  assert.ok(!I.TAP_URL_RE.test('https://www.instagram.com/static/bundle.js'));
+});
+
+t('looksLikeProfile matches the REAL web_profile_info shape (probe-verified)', () => {
+  // Verbatim shape from the live 2026-07-17 probe of @solarity.studio.
+  const real = {
+    username: 'solarity.studio', full_name: 'Seb 👋', biography: 'design studio',
+    external_url: 'https://solarity.studio',
+    edge_followed_by: { count: 27692 }, edge_follow: { count: 360 },
+    edge_owner_to_timeline_media: { count: 27 },
+  };
+  assert.equal(I.looksLikeProfile(real), true);
+  const p = C.profileFromMedia(null, real);
+  assert.equal(p.followers, 27692);
+  assert.equal(p.following, 360);
+  assert.equal(p.posts_count, 27);
+  assert.equal(C.formatCount(p.followers), '27.7K'); // what the header will actually render
+});
+
+t('the ad/deeplink blob carries a username but is NOT a profile', () => {
+  // The probe found this on the page: username matches the handle, but it's tracking metadata.
+  assert.equal(I.looksLikeProfile({
+    username: 'solarity.studio', campaign_id: '123', igshid: 'x', gclid: 'y',
+  }), false);
+});
+
+t('the VIEWER\'s own profile is cached separately and never answers for another handle', () => {
+  // The load-bearing one. The probe proved the only profile-shaped object SSR'd into
+  // @solarity.studio's page is jaypy06 — Juan's OWN account, bio and all. A "first seen" or
+  // "richest wins" cache would have written HIS bio onto HER moodboard. Keying by username is
+  // what makes that impossible (gotcha #22).
+  I._profileCache.clear();
+  I.profilePut({ username: 'jaypy06', full_name: 'Juan Pablo', biography: 'viewer session ctx' });
+  assert.equal(I._profileCache.get('solarity.studio'), undefined); // miss, not Juan's bio
+  assert.equal(I._profileCache.get('jaypy06').full_name, 'Juan Pablo');
+});
+
 t('looksLikeProfile accepts a profile payload, rejects a media author object', () => {
   assert.equal(I.looksLikeProfile({ username: 'a', biography: 'x' }), true);
   assert.equal(I.looksLikeProfile({ username: 'a', edge_followed_by: { count: 1 } }), true);
