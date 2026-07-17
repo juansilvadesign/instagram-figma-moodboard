@@ -332,7 +332,12 @@
 
   // ---- network-response tap + media cache -----------------------------------------------
 
-  const TAP_URL_RE = /\/graphql\/query|\/api\/v1\//;
+  // `/api/graphql` is NOT covered by the other two branches and was missing until 2026-07-17:
+  // a profile route fires FIVE POSTs to it (probe on @solarity.studio, route
+  // comet.igweb.PolarisProfilePostsTabRoute) and the tap was deaf to every one. That — not the
+  // matcher — is why the v0.4.1/0.4.2 profile header came back null: the payload never reached
+  // profilePut. Add an endpoint here before ever "fixing" a matcher that isn't being fed.
+  const TAP_URL_RE = /\/graphql\/query|\/api\/graphql|\/api\/v1\//;
   const MEDIA_CACHE_MAX = 400;
   const mediaCache = new Map(); // shortcode -> richest raw media object seen
 
@@ -693,6 +698,7 @@
     parseJsonChunks,
     collectMedia,
     cachePut,
+    TAP_URL_RE,
     looksLikeProfile,
     profilePut,
     _mediaCache: mediaCache,
