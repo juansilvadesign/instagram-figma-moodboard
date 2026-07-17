@@ -866,11 +866,107 @@ t('nextDelayMs stays inside the 5–10s band', () => {
 });
 
 t('profileFromMedia degrades to nulls rather than inventing header text', () => {
-  assert.equal(C.profileFromMedia(null), null);
-  const p = C.profileFromMedia({ username: 'solarity.studio', full_name: 'Solarity' });
+  assert.equal(C.profileFromMedia(null, null), null);
+  // media.user alone (no profile payload cached) — name/avatar only, never a guessed count.
+  const p = C.profileFromMedia({ username: 'solarity.studio', full_name: 'Solarity' }, null);
   assert.equal(p.display_name, 'Solarity');
-  assert.equal(p.biography, null); // the tap keeps media, not the profile payload
+  assert.equal(p.biography, null);
   assert.equal(p.followers, null);
+});
+
+t('profileFromMedia merges the profile payload — web (edge_*) shape', () => {
+  const p = C.profileFromMedia(
+    { username: 'solarity.studio', full_name: 'Seb', profile_pic_url: 'https://cdn/thumb.jpg' },
+    {
+      username: 'solarity.studio', biography: 'design studio', external_url: 'https://solarity.studio',
+      profile_pic_url_hd: 'https://cdn/hd.jpg',
+      edge_followed_by: { count: 4000000 }, edge_follow: { count: 454 },
+      edge_owner_to_timeline_media: { count: 1861 },
+    },
+  );
+  assert.equal(p.biography, 'design studio');
+  assert.equal(p.external_url, 'https://solarity.studio');
+  assert.equal(p.followers, 4000000);
+  assert.equal(p.following, 454);
+  assert.equal(p.posts_count, 1861);
+  assert.equal(p.avatar_url, 'https://cdn/hd.jpg'); // HD from the payload beats the media thumb
+});
+
+t('profileFromMedia merges the profile payload — mobile (*_count) shape', () => {
+  // We never assume WHICH query delivered the payload.
+  const p = C.profileFromMedia(null, {
+    username: 'solarity.studio', biography: 'x',
+    follower_count: 1234, following_count: 56, media_count: 27,
+  });
+  assert.equal(p.followers, 1234);
+  assert.equal(p.following, 56);
+  assert.equal(p.posts_count, 27);
+});
+
+t('profileFromMedia keeps an empty bio as "" and a missing one as null', () => {
+  // "" is a real answer (the profile has no bio); null means we never saw the payload. Placement
+  // must be able to tell them apart — writing a template placeholder over "" would be a lie.
+  assert.equal(C.profileFromMedia(null, { username: 'a', biography: '' }).biography, '');
+  assert.equal(C.profileFromMedia({ username: 'a' }, null).biography, null);
+});
+
+t('formatCount matches how Instagram renders counts', () => {
+  assert.equal(C.formatCount(1861), '1,861');
+  assert.equal(C.formatCount(4000000), '4M');
+  assert.equal(C.formatCount(4200000), '4.2M');
+  assert.equal(C.formatCount(12300), '12.3K');
+  assert.equal(C.formatCount(999), '999');   // IG only abbreviates from 10k
+  assert.equal(C.formatCount(9999), '9,999');
+  assert.equal(C.formatCount(null), null);   // never invent a number
+  assert.equal(C.formatCount(undefined), null);
+});
+
+// ---- inject.js profile tap (v0.4.1) ----------------------------------------
+
+t('looksLikeProfile accepts a profile payload, rejects a media author object', () => {
+  assert.equal(I.looksLikeProfile({ username: 'a', biography: 'x' }), true);
+  assert.equal(I.looksLikeProfile({ username: 'a', edge_followed_by: { count: 1 } }), true);
+  assert.equal(I.looksLikeProfile({ username: 'a', follower_count: 1 }), true);
+  // the thin author riding on a media item is NOT a profile payload
+  assert.equal(I.looksLikeProfile({ username: 'a', full_name: 'A', profile_pic_url: 'u' }), false);
+  assert.equal(I.looksLikeProfile({ biography: 'x' }), false); // no username to key on
+  assert.equal(I.looksLikeProfile({}), false);
+});
+
+t('the profile tap keys by username and keeps the richest payload', () => {
+  I._profileCache.clear();
+  I.profilePut({ username: 'solarity.studio', biography: 'x' });
+  I.profilePut({ username: 'solarity.studio', biography: 'x', follower_count: 9, media_count: 27 });
+  I.profilePut({ username: 'solarity.studio', biography: 'thin' }); // poorer — must not win
+  assert.equal(I._profileCache.get('solarity.studio').follower_count, 9);
+  // A suggested user on the same page is cached separately and can never be handed back for
+  // another handle — the crawler looks up its exact username.
+  I.profilePut({ username: 'someone.else', biography: 'stranger', follower_count: 1 });
+  assert.equal(I._profileCache.get('solarity.studio').biography, 'x');
+  assert.equal(I._profileCache.size, 2);
+});
+
+t('collectMedia harvests media and profiles in ONE walk', () => {
+  const media = [];
+  const profiles = [];
+  I.collectMedia(
+    {
+      data: {
+        user: { username: 'solarity.studio', biography: 'design studio', follower_count: 10 },
+        edges: [{ node: { code: 'DYw5KdMDH6a', image_versions2: { candidates: [] } } }],
+      },
+    },
+    (m) => media.push(m), { ms: 200 }, (p) => profiles.push(p),
+  );
+  assert.equal(media.length, 1);
+  assert.equal(profiles.length, 1);
+  assert.equal(profiles[0].username, 'solarity.studio');
+});
+
+t('collectMedia without putProfile still works (existing callers unaffected)', () => {
+  const media = [];
+  I.collectMedia({ code: 'DYw5KdMDH6a', image_versions2: { candidates: [] } }, (m) => media.push(m), { ms: 200 });
+  assert.equal(media.length, 1);
 });
 
 // ---- resolver: poster + pinned (v0.4.0, feeds the crawler) ------------------
