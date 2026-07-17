@@ -1,66 +1,27 @@
-# Placement engine — agent recipe (v2)
+# Placement — template map & gotchas (v2)
 
-How a capture folder becomes a dated moodboard Section in the Figma IG-UI template.
+The **volatile half** of turning a capture folder into a dated moodboard Section: the live
+template map, the earned gotchas, and the `capture.json` contract.
 
-`manifest.cjs` decides **what goes where** (pure, tested). This file is the **how** — the
-talk-to-figma MCP sequence the agent runs, because talk-to-figma is agent-driven and can't be
-called from a script. Verified live end-to-end 2026-07-17.
+> **The PROCEDURE lives in the `instagram-moodboard-placement` skill**
+> (`knowledge/skills/instagram-moodboard-placement/SKILL.md`), with the
+> `instagram-moodboard-placer` agent as its isolated runner. Split on purpose: the steps are
+> stable, this map is not — the template is hand-edited between sessions and every node id and
+> tile size here goes stale (once, mid-session). **Re-read the live file every run; treat the map
+> below as a hint, never as truth.**
 
-## Runtime preconditions
-
-1. The **bun socket server** on port 3055 (`ss -ltn | grep 3055`). It has no channel-listing
-   endpoint and no log — **ask the user for the channel name**, you cannot discover it.
-2. The **fork's dev plugin** open in Figma — "Talk to Figma (fork)". The fork and the community
-   plugin share a manifest id and look identical in the plugin list; only the fork has
-   `set_image_fill`. If it's the wrong one, the grid step fails and nothing before it does.
-3. `join_channel(<name>)`.
+`manifest.cjs` decides **what goes where** (pure, tested). Verified live end-to-end 2026-07-17.
 
 ## The capture folder
 
-Read the extension's output **in place** at `/mnt/c/Users/<user>/Downloads/instagram-captures/`.
-WSL mounts the Windows filesystem, and the MCP server (which reads `imagePath` itself) runs in
-that same filesystem — so there is **no copy step and no native host**. The plan's old
-"Windows→WSL copy mechanism" question is void.
+Read the extension's output **in place** at
+`/mnt/c/Users/<user>/Downloads/instagram-captures/<handle>/<date>/`. WSL mounts the Windows
+filesystem, and the MCP server (which reads `imagePath` itself) runs in that same filesystem — so
+there is **no copy step and no native host**. The plan's old "Windows→WSL copy mechanism" question
+is void.
 
 `captures/` is now scratch for **derived** artifacts only (ffmpeg posters), not a copy target.
 It stays gitignored.
-
-## Steps
-
-```
-node placement/manifest.cjs <capture-folder> --date YYYY-MM-DD   # → JSON on stdout
-```
-
-Then, per the manifest:
-
-1. **Dedup** — `get_document_info`; if a Section named `manifest.sectionName`
-   (`@<handle> · <date>`) exists, **BLOCK** — no duplicate same-day capture of a profile.
-2. **`create_section`** at a free spot, `name = manifest.sectionName`. Size the clone + ~40px
-   margin (template is 1350×3214 at absolute 0,0 → e.g. 1430×3294).
-3. **`clone_node(<template>)`** at section origin + 40. Never recreate the UI.
-4. **`set_parent(clone, section)`** — preserves absolute position.
-5. **`rename_node(clone, manifest.sectionName)`** — the clone inherits the template's name.
-6. **`scan_nodes_by_types(clone, ["FRAME"])`** — cloning reassigns every descendant id, so
-   locate slots *inside the clone*:
-   - the frame named **`grid`** → its **children are the 24 slots, already in feed order**
-     (row-major). No geometry sort needed.
-   - the frame named **`pfp`** **sized 150×150** → the avatar. ⚠️ see gotcha 1.
-7. **`set_image_fill(gridChild[i], manifest.slots[i].path, scaleMode: "FILL")`** — `slot` is the
-   child index. FILL center-crops a non-square source into the square tile, like Instagram.
-   Parallel calls are fine (verified 24 at once, no races).
-8. **`set_image_fill(pfp, <avatar>, "FILL")`**.
-9. **`set_multiple_text_contents(clone, [...])`** for the header — ids from
-   `scan_nodes_by_types(<clone hero>, ["TEXT"])`. Write from `capture.json`'s `profile`, and see
-   gotchas 7–8: **never leave a placeholder, never invent a value, never blank to `—`**. Counts are
-   pre-formatted the way Instagram renders them (`4M`, `12.3K`, `1,861`) — a raw `4000000` will not
-   fit the 21px slot. If `biography`/`external_url` are null (the page never fetched the payload),
-   write capture provenance + `instagram.com/<handle>` instead of mkbhd's copy.
-10. **`delete_node` the clone's `highlights-bar` AND its `friends` row** — we capture neither, so
-    both would otherwise assert the template's mkbhd placeholders about someone else's profile
-    (8 rings labelled "Frisbee"; "Followed by kurzgesagt"). Deleting is honest and the auto-layout
-    closes the gaps. Verified live 2026-07-17.
-    ⚠️ Target the **clone's** nodes, not the template's — check each `absoluteBoundingBox` falls
-    inside the new Section's x-range before deleting.
 
 ## Template map (live 2026-07-17 — re-verify before trusting)
 
@@ -159,7 +120,7 @@ numbers cross-checked exactly against an independent `web_profile_info` call.
 
 - **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
   Belongs in the template as a component, not as agent-created nodes.
-- **Highlights** — deliberately **deleted** rather than filled (step 10). Wiring them for real
+- **Highlights** — deliberately **deleted** at placement rather than filled. Wiring them for real
   means the highlights tray, a different API surface the tap may never see — it would need its own
   probe first, like the profile crawl did.
 - **Overflow past 24 posts** — reported in `manifest.overflow`, not placed. A second cloned frame

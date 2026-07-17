@@ -135,17 +135,24 @@ the tool performs is the downloads themselves.
 
 ### Agent placement engine (built + live-verified 2026-07-17)
 
-A capture folder becomes a dated Section holding a filled clone of the Figma IG-UI template:
+A capture folder becomes a dated Section holding a filled clone of the Figma IG-UI template.
+**Just ask** — "place the solarity capture" — and the `instagram-moodboard-placement` skill runs,
+via the `instagram-moodboard-placer` agent (it absorbs ~35 MCP calls and reports back tight).
+You'll be asked for the socket channel; an agent can't discover it.
+
+Preconditions: the **bun socket server** on 3055 + the **fork's** dev plugin open in Figma
+("Talk to Figma (fork)" — the community one lacks `set_image_fill`).
+
+By hand, the manifest half is:
 
 ```bash
-node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures --date 2026-07-17
+node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures/<handle>/<date>
 ```
 
-…then the agent runs the MCP sequence in [`placement/PLACEMENT.md`](placement/PLACEMENT.md)
-(needs the bun socket server + the **fork's** dev plugin). Posts are ordered newest-first by
-decoding the shortcode to its media pk, capped at the template's 24 grid slots; a carousel places
-its cover only; a video places an ffmpeg poster frame. No copy step — WSL reads the Windows
-Downloads folder in place.
+Posts follow `capture.json`'s feed order (pinned first), falling back to shortcode→pk order for a
+hand-captured folder; capped at the template's 24 slots; a carousel places its cover only; a video
+places its poster. No copy step — WSL reads the Windows Downloads folder in place. Map + gotchas:
+[`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
 **Still open:** the **full-profile crawler** (nothing builds a multi-post folder automatically —
 captures are hand-clicked for now) · `capture.json` feed order · the ▶ badge on video tiles ·

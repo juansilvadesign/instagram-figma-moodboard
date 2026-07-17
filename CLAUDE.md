@@ -61,7 +61,10 @@ placement/
   manifest.cjs     v2, agent-side: capture folder → ordered placement manifest (which file lands
                    in which grid slot). Pure half exported for tests; CLI does the I/O + ffmpeg
                    posters. Runs in Node, never in the browser.
-  PLACEMENT.md     the talk-to-figma MCP recipe + the live template map + placement gotchas
+  PLACEMENT.md     the VOLATILE half: live template map + placement gotchas + capture.json shape.
+                   The PROCEDURE lives in the `instagram-moodboard-placement` skill
+                   (knowledge/skills/), run by the `instagram-moodboard-placer` agent — split
+                   because the steps are stable and this map is not.
 captures/          gitignored scratch for DERIVED artifacts (ffmpeg posters) — not a copy target
 test/run-tests.cjs Node tests: resolver's pure half + in-page engines + the placement manifest
 ```
