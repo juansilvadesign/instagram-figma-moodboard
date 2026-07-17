@@ -811,14 +811,25 @@ t('planPost --full on a video keeps the .mp4', () => {
   assert.equal(C.planPost(vid(), { full: true })[0].url, 'https://cdn/x/v.mp4');
 });
 
-t('intoHandleFolder nests one capture per folder', () => {
-  const plan = C.intoHandleFolder(C.planPost(carousel(2), { full: false }), 'solarity.studio');
-  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/studio.xyz-DYw5KdMDH6a.jpg');
+t('intoHandleFolder nests one capture per handle+DATE folder', () => {
+  const plan = C.intoHandleFolder(C.planPost(carousel(2), { full: false }), 'solarity.studio', '2026-07-17');
+  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/2026-07-17/studio.xyz-DYw5KdMDH6a.jpg');
+  // Dated folders make overwrite safe (same handle+day = same content) and stop a re-capture
+  // from accumulating ' (1)' duplicates — 25 of them appeared on the second live run.
+  assert.equal(plan[0].conflictAction, 'overwrite');
+});
+
+t('a later capture of the same profile cannot overwrite the earlier one', () => {
+  // The whole point of the tool is an ACCUMULATING archive; a date-less folder would have let
+  // tomorrow's capture silently replace today's.
+  const a = C.intoHandleFolder(C.planPost(carousel(2), { full: false }), 'solarity.studio', '2026-07-17');
+  const b = C.intoHandleFolder(C.planPost(carousel(2), { full: false }), 'solarity.studio', '2026-07-18');
+  assert.notEqual(a[0].filename, b[0].filename);
 });
 
 t('planAvatar cannot be mistaken for a post by the placement parser', () => {
-  const plan = C.planAvatar('https://cdn/x/avatar.jpg?ig_cache=1', 'solarity.studio');
-  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/_avatar.jpg');
+  const plan = C.planAvatar('https://cdn/x/avatar.jpg?ig_cache=1', 'solarity.studio', '2026-07-17');
+  assert.equal(plan[0].filename, 'instagram-captures/solarity.studio/2026-07-17/_avatar.jpg');
   // The load-bearing half: manifest.cjs must SKIP it. '<handle>-avatar.jpg' would parse as a
   // post with shortcode "avatar" and take a grid slot.
   assert.equal(P.parseCaptureFilename('_avatar.jpg'), null);
