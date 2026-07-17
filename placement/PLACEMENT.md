@@ -119,9 +119,27 @@ numbers cross-checked exactly against an independent `web_profile_info` call.
 ## Not built yet
 
 - **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
-  Belongs in the template as a component, not as agent-created nodes.
+  Belongs in the template as a component, not as agent-created nodes (those would reflow the
+  auto-layout grid). **Build it subtractively:** there is **no visibility setter in the fork** —
+  `visible` appears only as a read-side guard in the plugin's scan code, so "hide the badge in the
+  template, reveal it per video tile" would need a new tool. Instead carry the badge on **all 24**
+  template tiles and `delete_node` it from the non-video ones — the same subtractive move placement
+  already makes for the highlights row, the `Followed by` row, and the uncaptured rows. The manifest
+  already knows which: `slots[].type` is `video` / `carousel` / `image`, taken from `capture.json`
+  and **not** from the filename (in covers mode a video is saved as a poster `.jpg`, so the
+  extension says `image` — see the sidecar override in `manifest.cjs`). IG's real grid badges
+  carousels too (⧉), and that same `type` already distinguishes them, so both badges come free if
+  the template carries both.
 - **Highlights** — deliberately **deleted** at placement rather than filled. Wiring them for real
   means the highlights tray, a different API surface the tap may never see — it would need its own
-  probe first, like the profile crawl did.
+  probe first, like the profile crawl did. Gotchas #22/#26 set the bar: a page SSR-embeds the
+  **viewer**, so a sloppy read of a new surface puts *your own* highlights on someone else's board.
 - **Overflow past 24 posts** — reported in `manifest.overflow`, not placed. A second cloned frame
-  inside the same Section would hold posts 25–48.
+  inside the same Section would hold posts 25–48. **Unreachable from the shipped pipeline:** the
+  crawler caps at 24 (`crawler.js` → `DEFAULT_LIMIT`, itself pinned to this template's grid
+  capacity), so only a hand-captured folder of >24 single clicks — the workflow the crawler
+  replaced — can overflow at all. Building the spill is therefore **not polish on top of what
+  exists**; it starts by reversing the 2026-07-17 decision that a capture is 24 posts, which was
+  taken for grid capacity **and** the shortest crawl — i.e. the least rate-limit exposure, which is
+  this tool's main ToS mitigation. Decide you want bigger captures first; the placement half is the
+  easy part.

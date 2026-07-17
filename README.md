@@ -73,7 +73,7 @@ point, same as the twitter-video-downloader sibling.
 
 ```bash
 node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk)
-                          # + the v2 placement manifest + the profile crawler — 106 tests
+                          # + the v2 placement manifest + the profile crawler — 110 tests
 node --check extension/*.js placement/*.cjs
 ```
 
@@ -154,6 +154,22 @@ hand-captured folder; capped at the template's 24 slots; a carousel places its c
 places its poster. No copy step — WSL reads the Windows Downloads folder in place. Map + gotchas:
 [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
-**Still open:** the **full-profile crawler** (nothing builds a multi-post folder automatically —
-captures are hand-clicked for now) · `capture.json` feed order · the ▶ badge on video tiles ·
-highlights · talk-to-figma server detection · stories/DMs (never).
+**Still open — all optional polish, nothing blocking.** Both halves of v2 shipped and are
+Chrome-verified; the crawler and `capture.json` feed order are **built**, not pending.
+
+- **▶ badge on video tiles** — the poster lands, the badge doesn't. Needs the badge in the
+  *template* first (agent-created nodes reflow the auto-layout grid); placement then deletes it
+  from the photo tiles. See [`placement/PLACEMENT.md`](placement/PLACEMENT.md) → Not built yet.
+- **Highlights** — deleted at placement today, which is honest. Wiring them for real needs its own
+  probe first: the tray is a surface the tap may never see.
+- **Spill past 24 posts** — reported in `manifest.overflow`, never placed, and **unreachable from
+  the crawl**, which caps at 24 on purpose. Building it means first deciding you want bigger
+  captures (see PLACEMENT.md for why 24).
+
+**Closed as void:** talk-to-figma **server detection**. The old plan gated the capture button on the
+socket server being up, back when capture and placement were one flow. The shipped design decouples
+them — the crawl writes a folder and never touches Figma, so gating it on Figma would block a
+capture that doesn't need it. Reaching the socket would also need `host_permissions`, which this
+extension deliberately doesn't take (permissions stay `["downloads"]`).
+
+**Never:** stories · DMs.
