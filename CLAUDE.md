@@ -11,8 +11,12 @@ A personal Manifest V3 Chrome extension used **inside a logged-in Chrome profile
 MVP is **single-post capture**: an injected button on any Instagram post downloads that post's
 media — image, video, or every item of a carousel — to `Downloads/instagram-captures/`, named
 `<username>-<shortcode>[-NN].<ext>`. The v2 (full-profile → Figma moodboard via the talk-to-figma
-MCP) is the tool's real differentiator and is **not built**; it stays gated on blocker **B1**
-(talk-to-figma cannot insert bitmaps) — see the idea note before touching any Figma work.
+MCP) is the tool's real differentiator. The **agent-side placement engine works end-to-end**
+(verified live 2026-07-17 — see [`placement/PLACEMENT.md`](placement/PLACEMENT.md)), and the
+**profile crawler is written (v0.4.0) but NOT yet verified in Chrome** (blocker B4): a fixed
+"Capture profile" button crawls the grid and writes covers + `capture.json` into
+`Downloads/instagram-captures/<handle>/`. Treat the crawl as unproven until the README's profile
+checklist passes on a real profile.
 
 ## Decisions (2026-07-07 build)
 
@@ -45,12 +49,20 @@ MCP) is the tool's real differentiator and is **not built**; it stays gated on b
 extension/
   manifest.json    permissions: ["downloads"] only — no host_permissions needed (see Gotchas #5)
   resolver.js      media resolution + pure helpers (global: IGFM_RESOLVER)
+  crawler.js       v2 profile crawl: grid enumeration, cover planning, capture.json
+                   (global: IGFM_CRAWLER). Pure half is Node-tested; scrolling is not.
   content.js       button injection + delegated click flow (all IG-DOM heuristics live here)
   content.css      button/toast styles
   background.js    thin SW: chrome.downloads only
   inject.js        in-page media resolver (MAIN world, standalone): fetch/XHR tap → embedded
                    JSON scan → fiber walk; exports for Node tests
-test/run-tests.cjs Node tests: resolver's pure half + the in-page resolver engines
+placement/
+  manifest.cjs     v2, agent-side: capture folder → ordered placement manifest (which file lands
+                   in which grid slot). Pure half exported for tests; CLI does the I/O + ffmpeg
+                   posters. Runs in Node, never in the browser.
+  PLACEMENT.md     the talk-to-figma MCP recipe + the live template map + placement gotchas
+captures/          gitignored scratch for DERIVED artifacts (ffmpeg posters) — not a copy target
+test/run-tests.cjs Node tests: resolver's pure half + in-page engines + the placement manifest
 ```
 
 Flow: click → shortcode (container links, else URL; may be null for ads) → chain, first
@@ -203,11 +215,35 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     with no duplicate; still present with the Save→`Remove` label flipped; rail = 8 direct children
     and `section` count = 1 (nothing for `findActionBar` to grab first).
 
+17. **The tap's cache order is NOT feed order — our own ingest reverses it.** `collectMedia` is a
+    stack DFS: it pushes an array's items `0..N` then `pop()`s, so **every array it walks comes
+    out reversed**. Probed live 2026-07-17 on `@solarity.studio`: `cache_order` was **exactly
+    `reverse(grid_order)`** (verified element-by-element). Instagram returns the profile's posts
+    in correct feed order, pinned first — we scramble them on ingest. **Read order from the DOM
+    grid, never from `_mediaCache`.** Do NOT "fix" `collectMedia` to preserve order: it is
+    hardened resolution code where order is irrelevant, and the DOM already has the answer.
+18. **The tap caches MORE than the grid** — 31 media objects vs 27 grid posts on the same probe.
+    The extras come from suggested/related rails, i.e. **other people's posts**. Dumping the cache
+    into a capture would put strangers' media on the moodboard. The DOM grid list is therefore
+    both the ORDER and the FILTER.
+19. **A pinned post breaks shortcode/pk ordering — this is not hypothetical.** `@solarity.studio`'s
+    grid slot 1 (`DEU1LbwxhF0`) is the **OLDEST** of its first 12 posts (pk rank 12/12): pk order
+    buries it last, the grid shows it first. So `capture.json`'s `feedOrder` is **mandatory**, not
+    a nicety — pk order is only the fallback for a hand-captured folder with no sidecar. The pin
+    itself is readable: **`timeline_pinned_user_ids`** (probe-verified) exists on every item but is
+    non-empty only on the pinned one.
+20. **Covers-only must NOT write a `-NN` suffix, and the avatar must not look like a post.**
+    `planDownloads` only suffixes multi-item posts, so `placement/manifest.cjs` folds a **lone
+    `-01`** back into the shortcode (it reads it as a code whose tail looks like an index) — a
+    cover saved as `<user>-<code>-01.jpg` would be placed as post `<code>-01`. Same trap for the
+    avatar: `<handle>-avatar.jpg` parses as a post with shortcode `"avatar"` and would take a grid
+    slot, so it is written as **`_avatar.jpg`** (no hyphen → the parser skips it).
+
 ## Validate / test
 
 ```bash
-node --check extension/*.js
-node test/run-tests.cjs        # 63 tests: pure resolver half + in-page resolver engines
+node --check extension/*.js placement/*.cjs
+node test/run-tests.cjs        # resolver's pure half + in-page engines + placement + crawler
 ```
 
 Browser-facing changes also require the manual unpacked-extension pass in a real logged-in Chrome
@@ -220,8 +256,9 @@ from pending in-Chrome verification, and say which is which when reporting statu
 - MVP stays single-post, user-initiated, client-side; permissions stay `["downloads"]`.
 - New non-obvious failure modes land in **Gotchas** above; status changes on the ideas board
   (`knowledge/ideas/README.md`) only after they're actually true (in-Chrome verification for
-  runtime claims).
-- v2/Figma work is **not** started unless blocker B1 (talk-to-figma bitmap insertion) is cleared.
+  runtime claims, a live Figma pass for placement claims).
+- Placement changes: **re-read the live template first** — it is hand-edited between sessions and
+  every rework reassigns node ids (see PLACEMENT.md → Template map).
 
 ## Common mistakes
 
@@ -229,5 +266,11 @@ from pending in-Chrome verification, and say which is which when reporting statu
 - Matching IG chrome by English aria-labels on a PT-BR profile (gotcha #2).
 - Downloading `blob:` video URLs (gotcha #3).
 - Adding host_permissions/cookies to move resolution into the SW (gotcha #5).
-- Bolting the profile crawl onto the MVP "while we're here" — v2 is gated on B1 and on a safe
-  crawl delay design; capture the idea, don't build it inline.
+- Trusting a recorded template node id or slot size — the template is hand-edited between
+  sessions; the 2026-06-24 map was fully stale by 2026-07-17 (ids AND tile sizes).
+- Copying media into `captures/` before placing it — unnecessary: WSL reads the Windows
+  Downloads folder directly and the MCP server resolves `imagePath` in that same filesystem.
+- Taking post ORDER from the tap's cache (gotcha #17) or from pk order when a `capture.json`
+  exists (gotcha #19) — the DOM grid is the only source of feed order.
+- Guessing at Instagram's data shape instead of probing it live. Every expensive round in this
+  project (#11–#14, #17–#19) ended with a probe correcting an assumption; the probes are cheap.

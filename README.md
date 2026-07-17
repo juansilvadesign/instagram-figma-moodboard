@@ -69,8 +69,9 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk) — 63 tests
-node --check extension/*.js
+node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk)
+                          # + the v2 placement manifest — 80 tests
+node --check extension/*.js placement/*.cjs
 ```
 
 ## How it resolves media (short version)
@@ -88,7 +89,51 @@ untrusted source is confirmed by pk, while a trusted live-API single image is no
 (signed), saved by the service worker via `chrome.downloads`. Details + failure modes:
 [`CLAUDE.md`](CLAUDE.md) → Architecture / Gotchas.
 
-## Not in the MVP (v2, see the idea note)
+## v2 — profile → Figma moodboard
 
-Full-profile crawl · Windows→WSL `captures/` copy · Claude agent placement into the Figma
-IG-UI template · talk-to-figma server detection · stories/DMs (never).
+### Profile crawl (v0.4.0 — ⚠️ NOT yet verified in Chrome)
+
+On a profile page a fixed **"Capture profile"** button appears (bottom-right). It scrolls the grid,
+saves the most recent **24** posts' **covers** into `Downloads/instagram-captures/<handle>/`, and
+writes a **`capture.json`** the placement engine reads. **Shift-click** to save every carousel
+slide instead of covers only. Pacing is randomized 5–10s per post.
+
+It makes almost no requests of its own: scrolling makes *Instagram's own page* fetch the post data,
+which the extension's tap already caches — so media is read from the cache, and the only network
+the tool performs is the downloads themselves.
+
+**Profile-crawl checklist (run once in a real logged-in Chrome — none of this is Node-testable):**
+
+- [ ] Button appears on `/<handle>/`, and **disappears** when you SPA-navigate to a post/feed
+- [ ] Toast counts up (`Reading grid… n/24` → `Captured n of 24…`); ~2–4 min at 5–10s pacing
+- [ ] `Downloads/instagram-captures/<handle>/` holds ~24 covers + `_avatar.jpg` + `capture.json`
+- [ ] **Covers only** — a carousel contributes exactly ONE file, and a reel's file is a **`.jpg`
+      poster, not an `.mp4`**
+- [ ] `capture.json` → `posts[0]` is the **pinned** post if the grid shows one, with
+      `"pinned": true`, and `posts[]` order matches the grid top-to-bottom
+- [ ] `capture.json` → `profile.display_name` / `avatar_url` are populated (**unverified
+      assumption**: that `media.user` carries `full_name`/`profile_pic_url`. If they're null, the
+      crawl still works — the header just isn't captured)
+- [ ] No file from a profile you didn't capture (gotcha #18 — the tap also caches suggested posts)
+- [ ] **Shift-click** → every carousel slide lands, suffixed `-01…-NN`
+- [ ] Re-running overwrites `capture.json` (not `capture (1).json`) — data: URL downloads are the
+      likeliest thing to be blocked here; check the SW console if it's missing
+- [ ] Then place it: `node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures/<handle> --date <today>`
+
+### Agent placement engine (built + live-verified 2026-07-17)
+
+A capture folder becomes a dated Section holding a filled clone of the Figma IG-UI template:
+
+```bash
+node placement/manifest.cjs /mnt/c/Users/<user>/Downloads/instagram-captures --date 2026-07-17
+```
+
+…then the agent runs the MCP sequence in [`placement/PLACEMENT.md`](placement/PLACEMENT.md)
+(needs the bun socket server + the **fork's** dev plugin). Posts are ordered newest-first by
+decoding the shortcode to its media pk, capped at the template's 24 grid slots; a carousel places
+its cover only; a video places an ffmpeg poster frame. No copy step — WSL reads the Windows
+Downloads folder in place.
+
+**Still open:** the **full-profile crawler** (nothing builds a multi-post folder automatically —
+captures are hand-clicked for now) · `capture.json` feed order · the ▶ badge on video tiles ·
+highlights · talk-to-figma server detection · stories/DMs (never).
