@@ -1187,6 +1187,28 @@ t('buildManifest places a carousel COVER once, not every slide', () => {
   assert.equal(m.slots[0].items, 3); // all 3 stay on disk, only the cover is placed
 });
 
+t('badgeFor maps a slot to its Instagram grid overlay glyph', () => {
+  assert.equal(P.badgeFor({ type: 'video' }), 'reel');
+  assert.equal(P.badgeFor({ type: 'carousel' }), 'carousel');
+  assert.equal(P.badgeFor({ type: 'image' }), null);
+  // A pin outranks the media-type glyph — a pinned post is often also a carousel (live:
+  // @solarity.studio's pinned post is an 8-slide carousel) and the pin is the better signal.
+  assert.equal(P.badgeFor({ type: 'carousel', pinned: true }), 'pinned');
+  assert.equal(P.badgeFor({ type: 'video', pinned: true }), 'pinned');
+  assert.equal(P.badgeFor(null), null);
+});
+
+t('buildManifest tags each slot with its badge (reel / carousel / none)', () => {
+  const m = P.buildManifest({
+    files: ['u-DY_HBkqxebO.mp4', 'u-DYw5KdMDH6a-01.jpg', 'u-DYw5KdMDH6a-02.jpg', 'u-C9XyZ12abcd.jpg'],
+    handle: 'u', date: '2026-07-17',
+  });
+  const badge = Object.fromEntries(m.slots.map((s) => [s.shortcode, s.badge]));
+  assert.equal(badge['DY_HBkqxebO'], 'reel');     // video cover
+  assert.equal(badge['DYw5KdMDH6a'], 'carousel'); // 2+ slides
+  assert.equal(badge['C9XyZ12abcd'], null);       // single image → no glyph
+});
+
 // ---- summary ---------------------------------------------------------------
 
 (async () => {
