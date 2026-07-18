@@ -183,6 +183,12 @@ function buildManifest(opts) {
     overflow: ordered.slice(slotCount).map((p) => p.shortcode),
     unfilled: Math.max(0, slotCount - placed.length),
     profile: o.profile || null,
+    // Story-highlights the crawler captured (title + on-disk cover file, tray order). Placement
+    // FILLS the template's ring row with these and deletes the surplus rings; empty → delete the
+    // whole row (the pre-2026-07-18 default). The CLI resolves an absolute `path` onto each.
+    highlights: (o.profile && Array.isArray(o.profile.highlights))
+      ? o.profile.highlights.slice(0, 8).map((h) => ({ title: (h && h.title) || null, file: (h && h.cover_file) || null }))
+      : [],
   };
 }
 
@@ -280,6 +286,19 @@ if (require.main === module) {
         s.error = 'poster extraction failed — slot left at its template placeholder';
       }
     }
+  }
+
+  // Highlight covers: resolve by PARSING THE FOLDER for `_highlight_NN.*` (tray order = file order),
+  // never by the recorded extension — Chrome silently rewrites a lying CDN extension (gotcha #21),
+  // exactly as it does for post covers.
+  if (manifest.highlights && manifest.highlights.length) {
+    const onDisk = fs.readdirSync(dir);
+    manifest.highlights.forEach((h, i) => {
+      const nn = String(i + 1).padStart(2, '0');
+      const match = onDisk.find((f) => f.startsWith(`_highlight_${nn}.`));
+      if (match) h.path = path.resolve(dir, match);
+      else if (h.file) h.path = path.resolve(dir, h.file); // best effort if the folder lacks it
+    });
   }
   console.log(JSON.stringify(manifest, null, 2));
 }

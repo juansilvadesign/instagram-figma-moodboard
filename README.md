@@ -73,7 +73,7 @@ point, same as the twitter-video-downloader sibling.
 
 ```bash
 node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk)
-                          # + the v2 placement manifest + the profile crawler — 110 tests
+                          # + the v2 placement manifest + the profile crawler — 119 tests
 node --check extension/*.js placement/*.cjs
 ```
 
@@ -127,6 +127,12 @@ the tool performs is the downloads themselves.
       numbers against the real profile**: they must be that handle's, not the logged-in viewer's,
       whose profile IS embedded in every page (gotchas #22/#26). `external_url: ""` is a real
       answer (no link); `null` means the payload never arrived
+- [ ] **`capture.json` → `profile.highlights`** populated for a profile that HAS story highlights
+      (each `{title, cover_file}`, tray order), and `_highlight_NN.jpg` covers on disk. Console logs
+      `[IGFM] highlights: N covers saved`. **NEW 2026-07-18, Node-verified only — this is the pending
+      B4 check.** Cross-check the titles are the target's own (owner is keyed by `user.username`,
+      #22/#26). A profile with no highlights → `profile.highlights` absent, and placement deletes the
+      row — that's correct, not a miss
 - [ ] No file from a profile you didn't capture (gotcha #18 — the tap also caches suggested posts)
 - [ ] **Shift-click** → every carousel slide lands, suffixed `-01…-NN`
 - [ ] Re-running overwrites `capture.json` (not `capture (1).json`) — data: URL downloads are the
@@ -161,11 +167,13 @@ Figma from [`assets/icons/`](assets/icons/) — into the tile's top-right corner
 placed `@solarity.studio` board — all 24 tiles retro-fitted 2026-07-18, badges match the manifest
 tile-by-tile. Recipe: [`PLACEMENT.md`](placement/PLACEMENT.md) → Type badges.
 
-**Still open — optional polish, nothing blocking.** Both halves of v2 shipped and are
-Chrome-verified; the crawler and `capture.json` feed order are **built**, not pending.
-
-- **Highlights** — deleted at placement today, which is honest. Wiring them for real needs its own
-  probe first: the tray is a surface the tap may never see.
+**Story highlights — BUILT 2026-07-18** (Node-verified; one Chrome pass pending). Probed live first
+(`probes/highlights-probe.js`): the tray comes over `/api/graphql` and each item carries its own
+owner (`user.username`), so a `collectHighlights` tap cache keys them by owner (#22), the crawler
+downloads the ≤8 covers as `_highlight_NN.jpg` and writes `profile.highlights` to `capture.json`, and
+placement **fills** the ring row (surplus rings deleted; none → whole row deleted). **Left:** the
+in-Chrome capture pass (B4) + a live placement once a capture exists. Recipe:
+[`PLACEMENT.md`](placement/PLACEMENT.md) → Story highlights.
 
 **Decided against (2026-07-17) — spill past 24 posts.** A capture is 24 posts, full stop. It was
 never reachable anyway (the crawl caps at 24), and building it would mean raising that cap → a

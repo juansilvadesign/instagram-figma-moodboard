@@ -36,7 +36,7 @@ differ, so always navigate by name+size.
 | Post slot ×24 | `cover` | **310×310** | `IMAGE`/`FILL` leaf; demo slots 0–2 carry an empty type-marker child (`pinned-post`/`clip-reels-content`/`carousel`) over the baked-in placeholder badge |
 | Type-badge source ×3 | `badge-reel` ▶ / `badge-carousel` ⧉ / `badge-pinned` 📌 | **20×20** | **page-level** white `VECTOR`s (siblings of the template, not inside it) — placement clones the right one onto each reel/carousel/pinned tile; see *Type badges* |
 | Avatar | `pfp` | **150×150** | in `hero > story > old-ring`; cornerRadius 75 |
-| Highlight ×8 | `image` | 76×76 | in `highlights-bar`; **not placed yet** |
+| Highlight ×8 | `image` | 76×76 | `highlights-bar` → `highlight` group → `cover` → `image`; filled from `manifest.highlights` (step 11), surplus rings deleted |
 | Handle | `username` (TEXT) | — | |
 | Stats | `1,861`/`posts`, `4M`/`followers`, `454`/`following` | — | count and label are **separate** nodes |
 | Name / bio / link | `Marques Brownlee` / `I promise…` / `mkbhd.com` | — | |
@@ -73,6 +73,19 @@ differ, so always navigate by name+size.
 8. **Write nothing you don't know.** `capture.json` leaves `biography`/`external_url`/counts null.
    A wrong value is worse than an empty one — a moodboard that claims another account's follower
    count is a lie you'll later believe.
+9. **The fork's `get_node_info` does NOT serialize VECTOR content — a vector-bearing frame reads as
+   `children: []`.** Every glyph in the template (nav/tab icons, the `badge-*` sources) shows up as
+   an empty `icon`/`Vector` frame in the JSON, so "empty children" ≠ visually empty. Verify with
+   pixels (`export_node_as_image`) before concluding a node is blank — this cost a full diagnostic
+   round on 2026-07-18: the badge *marker* frames really were empty, but the badges on the demo
+   tiles were **baked into the placeholder photos**, and only an export told the two apart. Same
+   probe-the-truth discipline the rest of the project runs on. **Second confirmed instance,
+   2026-07-18 (`@solarity.studio` placement):** the header's verified-checkmark marker frame
+   rendered visibly in the export even though its fill read as invisible in `get_node_info` — same
+   trap, different node. `capture.json.profile.is_verified` was `false`, so the honest fix is to
+   **`delete_node` the checkmark marker frame outright**, not to trust a hidden/invisible fill
+   property. Whenever placing a non-verified profile, check the export for a stray checkmark and
+   delete the marker if `is_verified` is false — don't assume an unset fill means it won't render.
 
 ## capture.json (written by the crawler, v0.4.0)
 
@@ -89,7 +102,10 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
     "username": "solarity.studio", "display_name": "Seb 👋", "is_verified": true,
     "avatar_file": "_avatar.jpg", "avatar_url": "https://…",
     "biography": "…", "external_url": "https://…",
-    "posts_count": 27, "followers": 4000000, "following": 454   // raw ints — format for display
+    "posts_count": 27, "followers": 4000000, "following": 454,  // raw ints — format for display
+    "highlights": [            // story tray, tray order, ≤8; placement fills the ring row (step 11)
+      { "title": "Why CUSTOM?", "cover_file": "_highlight_01.jpg" }
+    ]
   },
   "posts": [                   // FEED ORDER, pinned first
     { "shortcode": "DEU1LbwxhF0", "type": "carousel", "items": 8,
@@ -100,6 +116,9 @@ as `feedOrder`** — it is authoritative over the pk fallback, because Instagram
 ```
 
 - `_avatar.jpg` is the avatar (named so `manifest.cjs` can't parse it as a post — gotcha #20).
+- `profile.highlights` is the story-highlights tray (tray order, ≤8), each `{title, cover_file}`;
+  covers are `_highlight_NN.jpg` — underscore, **no hyphen**, skipped by the parser like the avatar.
+  Absent/empty → placement deletes the highlights row (the pre-2026-07-18 default).
 - `type`/`items` come from here, not the filenames: in `covers` mode a carousel leaves one file
   behind, so the folder alone can't tell you it was a carousel of 8.
 
@@ -145,17 +164,33 @@ moment a real cover replaces the photo; the badge has to be re-added as a node.
   the grid, checked tile-by-tile against the manifest (1 pinned + 13 reel + 10 carousel = 24, slot 0
   pinned reel → pin). Earlier: a reel-only smoke test on a template slot.
 
-## Not built yet
+## Story highlights (built 2026-07-18)
 
-- **Highlights** — deliberately **deleted** at placement rather than filled. Wiring them for real
-  means the highlights tray, a different API surface the tap may never see — it needs its own probe
-  first, like the profile crawl did. Gotchas #22/#26 set the bar: a page SSR-embeds the **viewer**,
-  so a sloppy read of a new surface puts *your own* highlights on someone else's board.
-  **Probe ready → [`probes/highlights-probe.js`](../probes/highlights-probe.js)** (zero-request
-  console recorder; run in a logged-in Chrome per its header). It reports which endpoint carries the
-  tray, whether `TAP_URL_RE` already sees it (matcher-gap vs collector-gap, #25), whether the
-  shipped collectors would keep an item, and **whether a tray item names its owner** — if not,
-  highlights are unsafe to place at all. Run that and read its output before writing any collector.
+Probed live (`@solarity.studio`, via [`probes/highlights-probe.js`](../probes/highlights-probe.js)),
+then built. The tray arrives over `/api/graphql` → `PolarisProfileStoryHighlightsTrayContentQuery`,
+which `TAP_URL_RE` already taps — a clean **collector gap**, no matcher change and no extra request
+(#25 was the fear, not the reality). Each tray item: `{ id: "highlight:<pk>", title,
+cover_media.cropped_image_version.url (150×150 CDN jpg), user: {username, id},
+__typename: "XDTReelDict" }`. **The owner is ON the item (`user.username`)**, so highlights key by
+username exactly like the profile cache (#22) — safe, no request/response correlation.
+
+- **Capture** (`inject.js` + `crawler.js`): a `collectHighlights` pass — **order-preserving**, unlike
+  `collectMedia` which reverses arrays (gotcha #17) — feeds `highlightPut`, a THIRD tap cache keyed
+  by `user.username`, wired into BOTH ingest sites (#24). The crawler reads the handle's tray off the
+  tap (zero extra requests), downloads the ≤8 covers as **`_highlight_NN.jpg`** — underscore
+  separator, **no hyphen** — so `manifest.cjs` skips them (a hyphen → mis-parsed as post
+  `_highlight`/`NN`, gotcha #20) — and writes `profile.highlights: [{title, cover_file}]` to
+  `capture.json`. The CLI resolves each cover by **parsing the folder** for `_highlight_NN.*`, never
+  the recorded extension (gotcha #21).
+- **Placement** (skill step 11): FILL the `highlights-bar` — `set_image_fill` each **76×76** ring +
+  set its label — from `manifest.highlights` (`[{title, path}]`, tray order). Fewer than 8 → fill N,
+  **delete the surplus rings**; none → delete the whole bar (the pre-build default).
+- **✅ B4 Chrome pass CLEARED 2026-07-18** on the `@solarity.studio` 2026-07-18 capture:
+  `capture.json.profile.highlights` came back populated and owner-correct (3 real rings: "My TREND
+  🤌", "Happy Clients", "Why CUSTOM?"), and placement filled all 3 covers+labels and deleted the 5
+  surplus template rings. Story highlights are now fully verified end-to-end, both halves. **119
+  Node tests green.**
+
 ## Decided against — do not build
 
 - **Spill past 24 posts (closed 2026-07-17).** ~~A second cloned frame inside the same Section would
