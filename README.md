@@ -157,9 +157,9 @@ places its poster. No copy step — WSL reads the Windows Downloads folder in pl
 **Type badges (▶ reel · ⧉ carousel · 📌 pinned) — BUILT 2026-07-17.** `manifest.cjs` tags each slot
 with a `badge` (`badgeFor`, unit-tested; a pin outranks the media-type glyph); placement clones the
 matching white-vector source — `badge-reel` / `badge-carousel` / `badge-pinned`, hand-pasted into
-Figma from [`assets/icons/`](assets/icons/) — into the tile's top-right corner. The reel glyph is
-live-verified on a real tile; a full 3-type pass on a placed board is all that's left. Recipe:
-[`PLACEMENT.md`](placement/PLACEMENT.md) → Type badges.
+Figma from [`assets/icons/`](assets/icons/) — into the tile's top-right corner. Verified end-to-end on the
+placed `@solarity.studio` board — all 24 tiles retro-fitted 2026-07-18, badges match the manifest
+tile-by-tile. Recipe: [`PLACEMENT.md`](placement/PLACEMENT.md) → Type badges.
 
 **Still open — optional polish, nothing blocking.** Both halves of v2 shipped and are
 Chrome-verified; the crawler and `capture.json` feed order are **built**, not pending.

@@ -140,16 +140,22 @@ moment a real cover replaces the photo; the badge has to be re-added as a node.
   are parent-relative, so one call both reparents and positions. A `null` badge places nothing.
 - **No shadow** — the glyphs are pure white to match IG exactly (user's call). On a light cover a
   white glyph can wash out; that's accepted.
-- **Proven 2026-07-17:** a live smoke test cloned `badge-reel` onto a template slot → exported → a
-  clean white ▶ at the right size/inset. The deterministic half is verified on the real
-  `@solarity.studio` manifest — 1 pinned + 13 reel + 10 carousel = 24, slot 0 (pinned reel) → `pinned`.
+- **Proven end-to-end on a placed board 2026-07-18:** retro-fitted all 24 tiles of the
+  `@solarity.studio` Section — cloned each source onto tile `grid.child[i]` at `x:282 y:8`, exported
+  the grid, checked tile-by-tile against the manifest (1 pinned + 13 reel + 10 carousel = 24, slot 0
+  pinned reel → pin). Earlier: a reel-only smoke test on a template slot.
 
 ## Not built yet
 
 - **Highlights** — deliberately **deleted** at placement rather than filled. Wiring them for real
-  means the highlights tray, a different API surface the tap may never see — it would need its own
-  probe first, like the profile crawl did. Gotchas #22/#26 set the bar: a page SSR-embeds the
-  **viewer**, so a sloppy read of a new surface puts *your own* highlights on someone else's board.
+  means the highlights tray, a different API surface the tap may never see — it needs its own probe
+  first, like the profile crawl did. Gotchas #22/#26 set the bar: a page SSR-embeds the **viewer**,
+  so a sloppy read of a new surface puts *your own* highlights on someone else's board.
+  **Probe ready → [`probes/highlights-probe.js`](../probes/highlights-probe.js)** (zero-request
+  console recorder; run in a logged-in Chrome per its header). It reports which endpoint carries the
+  tray, whether `TAP_URL_RE` already sees it (matcher-gap vs collector-gap, #25), whether the
+  shipped collectors would keep an item, and **whether a tray item names its owner** — if not,
+  highlights are unsafe to place at all. Run that and read its output before writing any collector.
 ## Decided against — do not build
 
 - **Spill past 24 posts (closed 2026-07-17).** ~~A second cloned frame inside the same Section would
