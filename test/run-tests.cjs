@@ -1209,6 +1209,93 @@ t('buildManifest tags each slot with its badge (reel / carousel / none)', () => 
   assert.equal(badge['C9XyZ12abcd'], null);       // single image → no glyph
 });
 
+// ---- highlights (v2 header; probed live 2026-07-18, clean collector-gap) ----
+
+const hlNode = (id, title, user) => ({
+  id: `highlight:${id}`, title,
+  cover_media: { cropped_image_version: { url: `https://cdn/${id}.jpg` } },
+  user: { username: user || 'solarity.studio', id: '62804501366' }, __typename: 'XDTReelDict',
+});
+
+t('looksLikeHighlight accepts a tray item, rejects posts / profiles / owner-less', () => {
+  assert.equal(I.looksLikeHighlight(hlNode('a', 'Why CUSTOM?')), true);
+  assert.equal(I.looksLikeHighlight({ ...hlNode('a', 'x'), user: undefined }), false); // no owner → unsafe (#22/#26)
+  assert.equal(I.looksLikeHighlight({ ...hlNode('a', undefined) }), false);             // no title
+  assert.equal(I.looksLikeHighlight({ ...hlNode('a', 'x'), cover_media: undefined }), false);
+  assert.equal(I.looksLikeHighlight({ code: 'DYw5KdMDH6a', image_versions2: {} }), false); // a post
+});
+
+t('collectHighlights keeps TRAY ORDER and dedupes (collectMedia would reverse — gotcha #17)', () => {
+  const tray = { data: { highlights: { edges: [
+    { node: hlNode('a', 'First') }, { node: hlNode('b', 'Second') }, { node: hlNode('c', 'Third') },
+  ], page_info: {} } } };
+  const out = [];
+  I.collectHighlights(tray, (h) => out.push(h.title), { ms: 300 });
+  assert.deepEqual(out, ['First', 'Second', 'Third']);
+});
+
+t('the highlight tap keys by OWNER and never leaks a suggested user\'s tray (#22/#26)', () => {
+  I._highlightCache.clear();
+  I.collectHighlights(
+    { edges: [{ node: hlNode('a', 'First', 'solarity.studio') }, { node: hlNode('b', 'Second', 'solarity.studio') }] },
+    I.highlightPut, { ms: 300 },
+  );
+  I.highlightPut(hlNode('z', 'Stranger', 'someone.else')); // a suggested user on the same page
+  const hs = I.highlightsFor('solarity.studio');
+  assert.deepEqual(hs.map((h) => h.title), ['First', 'Second']); // order kept, stranger absent
+  assert.equal(hs[0].cover_url, 'https://cdn/a.jpg');           // cover extracted from cover_media
+  assert.equal(I.highlightsFor('someone.else').length, 1);
+  assert.equal(I.highlightsFor('nobody'), null);               // never saw the tray → null, not []
+});
+
+t('normalizeHighlights caps at 8, drops cover-less, keeps title + order', () => {
+  const raw = [
+    { title: 'A', cover_url: 'https://cdn/a.jpg' },
+    { title: 'B', cover_url: null }, // no cover → dropped rather than shown as an empty ring
+    { title: null, cover_url: 'https://cdn/c.jpg' },
+    ...Array.from({ length: 10 }, (_, i) => ({ title: 't' + i, cover_url: 'https://cdn/x' + i + '.jpg' })),
+  ];
+  const out = C.normalizeHighlights(raw);
+  assert.equal(out.length, 8);
+  assert.deepEqual(out.slice(0, 2), [
+    { title: 'A', cover_url: 'https://cdn/a.jpg' }, { title: null, cover_url: 'https://cdn/c.jpg' },
+  ]);
+  assert.equal(C.normalizeHighlights(null).length, 0);
+});
+
+t('planHighlights names covers _highlight_NN (NO hyphen) so the manifest never places them as posts', () => {
+  const plan = C.planHighlights(
+    [{ title: 'A', cover_url: 'https://cdn/a.jpg?x=1' }, { title: 'B', cover_url: 'https://cdn/b.webp' }],
+    'solarity.studio', '2026-07-18',
+  );
+  assert.ok(plan[0].filename.endsWith('/_highlight_01.jpg'));
+  assert.ok(plan[1].filename.endsWith('/_highlight_02.webp'));
+  // the load-bearing property (gotcha #20/#21): the placement parser SKIPS these
+  assert.equal(P.parseCaptureFilename('_highlight_01.jpg'), null);
+  assert.equal(P.parseCaptureFilename('_highlight_02.webp'), null);
+});
+
+t('highlightEntries zips titles with on-disk cover files, tray order', () => {
+  const hs = [{ title: 'A', cover_url: 'https://cdn/a.jpg' }, { title: null, cover_url: 'https://cdn/b.jpg' }];
+  const plan = C.planHighlights(hs, 'u', '2026-07-18');
+  assert.deepEqual(C.highlightEntries(hs, plan), [
+    { title: 'A', cover_file: '_highlight_01.jpg' }, { title: null, cover_file: '_highlight_02.jpg' },
+  ]);
+});
+
+t('buildManifest surfaces profile.highlights as {title, file}; [] when absent', () => {
+  const m = P.buildManifest({
+    files: ['u-DYw5KdMDH6a.jpg'], handle: 'u', date: '2026-07-18',
+    profile: { username: 'u', highlights: [
+      { title: 'Why CUSTOM?', cover_file: '_highlight_01.jpg' }, { title: null, cover_file: '_highlight_02.jpg' },
+    ] },
+  });
+  assert.deepEqual(m.highlights, [
+    { title: 'Why CUSTOM?', file: '_highlight_01.jpg' }, { title: null, file: '_highlight_02.jpg' },
+  ]);
+  assert.deepEqual(P.buildManifest({ files: ['u-DYw5KdMDH6a.jpg'], handle: 'u', date: '2026-07-18' }).highlights, []);
+});
+
 // ---- summary ---------------------------------------------------------------
 
 (async () => {
