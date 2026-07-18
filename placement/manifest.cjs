@@ -116,6 +116,22 @@ function orderPosts(posts) {
   });
 }
 
+// The top-right grid glyph Instagram overlays on a tile, or null for a plain photo. The template
+// carries three white vector sources (named `badge-reel` / `badge-carousel` / `badge-pinned`);
+// placement clones the matching one into the tile's corner (PLACEMENT.md → Type badges). Real IG
+// shows only ONE glyph per tile, so this picks one: a PIN outranks the media-type glyph (a pinned
+// post is usually also a carousel — live: @solarity.studio's pinned post is an 8-slide carousel —
+// and the pin is the more useful signal on a moodboard). `type` is the FINAL type: in covers mode
+// a video's cover is a .jpg so the filename reads 'image', and only capture.json restores 'video'
+// — which is why the CLI recomputes this after applying the sidecar's type/pinned override.
+function badgeFor(slot) {
+  if (!slot) return null;
+  if (slot.pinned) return 'pinned';
+  if (slot.type === 'video') return 'reel';
+  if (slot.type === 'carousel') return 'carousel';
+  return null;
+}
+
 /**
  * @param {object} opts
  * @param {string[]} opts.files      filenames in the capture folder (basenames or paths)
@@ -160,6 +176,9 @@ function buildManifest(opts) {
       // A video cover can't be an image fill — the poster frame gets extracted with ffmpeg.
       needsPoster: p.cover.type === 'video',
       items: p.items.length,
+      // Overlay glyph. pinned isn't known here (it comes from capture.json), so this is the
+      // best-effort value from type; the CLI recomputes it after the sidecar override.
+      badge: badgeFor({ type: p.type }),
     })),
     overflow: ordered.slice(slotCount).map((p) => p.shortcode),
     unfilled: Math.max(0, slotCount - placed.length),
@@ -174,6 +193,7 @@ module.exports = {
   parseCaptureFilename,
   groupPosts,
   orderPosts,
+  badgeFor,
   buildManifest,
 };
 
@@ -242,6 +262,7 @@ if (require.main === module) {
       s.type = p.type || s.type;
       s.items = p.items == null ? s.items : p.items;
       if (p.pinned) s.pinned = true;
+      s.badge = badgeFor(s); // finalize after the type/pinned override (covers-mode video → reel)
     }
   }
 
