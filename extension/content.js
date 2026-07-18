@@ -332,9 +332,10 @@ function injectProfileButton() {
   document.body.appendChild(btn);
 }
 
-// Asks inject.js for the profile payload the PAGE already fetched (bio, link, counts). Makes no
-// network request — inject.js answers from its tap cache, keyed by exact username. Returns null
-// when the page never fetched it, and the crawl then simply records nulls.
+// Asks inject.js for the profile payload the PAGE already fetched (bio, link, counts) AND its
+// story-highlights tray. Makes no network request — inject.js answers from its tap cache, keyed by
+// exact username. Returns { profile, highlights } (each null when the page never fetched it), and
+// the crawl then simply records nulls.
 function fetchProfileFromPage(handle) {
   return new Promise((resolve) => {
     const reqId = 'igfmp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -356,11 +357,11 @@ function fetchProfileFromPage(handle) {
         }
       }
       if (!d || d.reqId !== reqId) return;
-      console.log(`[IGFM] profile payload: ${d.profile ? 'hit' : 'miss'} (${d.cached || 0} cached)`);
-      finish(d.profile || null);
+      console.log(`[IGFM] profile payload: ${d.profile ? 'hit' : 'miss'} · highlights: ${Array.isArray(d.highlights) ? d.highlights.length : 0} (${d.cached || 0} cached)`);
+      finish({ profile: d.profile || null, highlights: Array.isArray(d.highlights) ? d.highlights : null });
     };
     document.addEventListener('igfm-response-profile', onResponse);
-    const timer = setTimeout(() => finish(null), 1600);
+    const timer = setTimeout(() => finish({ profile: null, highlights: null }), 1600);
     document.dispatchEvent(
       new CustomEvent('igfm-request-profile', { detail: JSON.stringify({ reqId, handle }) }),
     );
@@ -393,8 +394,10 @@ async function runProfileCrawl(btn, full) {
     const codes = all.slice(0, limit);
     if (!codes.length) throw new Error('no posts found on this grid');
 
-    // The profile payload the page fetched for itself — bio/link/counts. Zero extra requests.
-    const rawProfile = await fetchProfileFromPage(handle);
+    // The profile payload + highlights tray the page fetched for itself. Zero extra requests.
+    const page = await fetchProfileFromPage(handle);
+    const rawProfile = page.profile;
+    const rawHighlights = page.highlights;
 
     const entries = [];
     const skipped = [];
@@ -450,6 +453,24 @@ async function runProfileCrawl(btn, full) {
         saved += 1;
       } catch (e) {
         console.warn('[IGFM] avatar download failed:', e);
+      }
+    }
+
+    // 2b. Highlight covers — downloaded like the avatar (one CDN image each, no delay), capped at
+    //     the template's 8 rings, tray order. Attaches profile.highlights = [{title, cover_file}] so
+    //     placement FILLS the ring row; absent/empty → placement deletes the row (the old default).
+    if (profile) {
+      const hs = C.normalizeHighlights(rawHighlights);
+      if (hs.length) {
+        try {
+          const hplan = C.planHighlights(hs, handle, date);
+          await sendPlan(hplan);
+          profile.highlights = C.highlightEntries(hs, hplan);
+          saved += hplan.length;
+          console.log(`[IGFM] highlights: ${hplan.length} covers saved`);
+        } catch (e) {
+          console.warn('[IGFM] highlights download failed:', e);
+        }
       }
     }
 

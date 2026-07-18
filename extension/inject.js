@@ -132,6 +132,64 @@
     profileCache.set(name, obj);
   }
 
+  // Story-highlights tray (v2 crawl header; probed live 2026-07-18 on @solarity.studio). Same
+  // discipline as profileCache: keyed by the OWNER's username so a page's suggested-user trays can
+  // never leak onto the board (#22/#26). Safe because each tray item carries its OWN owner —
+  // `user.username` — verified on the wire. Value is an insertion-ordered Map<id,{id,title,cover_url}>
+  // = tray/display order, which collectHighlights preserves (collectMedia's stack DFS reverses
+  // arrays, gotcha #17, so highlights must NOT ride that walk).
+  const highlightCache = new Map();
+
+  function firstCdnUrl(o, d) {
+    if (!o || typeof o !== 'object' || (d || 0) > 5) return null;
+    try {
+      if (typeof o.url === 'string' && /^https?:/.test(o.url)) return o.url;
+      for (const k of Object.keys(o)) { const r = firstCdnUrl(o[k], (d || 0) + 1); if (r) return r; }
+    } catch { /* proxy threw */ }
+    return null;
+  }
+
+  function extractHighlightCover(o) {
+    try {
+      const c = o.cover_media;
+      if (c && c.cropped_image_version && typeof c.cropped_image_version.url === 'string') {
+        return c.cropped_image_version.url; // the shape seen live 2026-07-18
+      }
+    } catch { /* proxy */ }
+    return firstCdnUrl(o.cover_media || o, 0); // shape-drift fallback: any cdn url under the cover
+  }
+
+  function looksLikeHighlight(o) {
+    try {
+      if (!o || typeof o !== 'object') return false;
+      const id = typeof o.id === 'string' ? o.id : '';
+      const typed = o.__typename === 'XDTReelDict' || /^highlight:/.test(id);
+      return typed && typeof o.title === 'string' && !!o.cover_media &&
+        !!(o.user && typeof o.user.username === 'string');
+    } catch { return false; }
+  }
+
+  function highlightPut(o) {
+    if (!looksLikeHighlight(o)) return;
+    let user, id, title;
+    try { user = o.user.username; id = o.id; title = o.title; } catch { return; }
+    if (typeof user !== 'string' || !user || typeof id !== 'string') return;
+    let byId = highlightCache.get(user);
+    if (!byId) {
+      if (highlightCache.size > 50) highlightCache.clear(); // bounded; trays are tiny
+      byId = new Map();
+      highlightCache.set(user, byId);
+    }
+    if (byId.has(id)) return; // first-seen wins → keeps the display order collectHighlights feeds
+    byId.set(id, { id, title: typeof title === 'string' ? title : null, cover_url: extractHighlightCover(o) });
+  }
+
+  // Ordered list of a handle's highlights (tray order), or null if the tap never saw its tray.
+  function highlightsFor(handle) {
+    const byId = handle ? highlightCache.get(handle) : null;
+    return byId ? [...byId.values()] : null;
+  }
+
   function looksLikeMedia(obj, shortcode) {
     let code;
     try {
@@ -436,8 +494,57 @@
     return true;
   }
 
+  // Order-preserving highlight harvest. Unlike collectMedia (a stack DFS that REVERSES every array,
+  // gotcha #17), this reads a tray's edges/array IN ORDER, so the moodboard's ring order matches
+  // Instagram's. Callers gate it behind a cheap string check, so non-tray responses pay nothing.
+  // Handles the connection shape (`{edges:[{node}]}`) and a bare array of items.
+  function collectHighlights(root, put, budget) {
+    const deadline = now() + (budget && budget.ms !== undefined ? budget.ms : 120);
+    let nodes = 150000;
+    const visited = new Set();
+    // The array branch reads edges in order, but their nodes also get re-reached via the stack, so
+    // emit each id ONCE — first-seen (in-order) wins, which is what preserves display order.
+    const emitted = new Set();
+    const emit = (n) => {
+      const id = n && n.id;
+      if (typeof id === 'string') { if (emitted.has(id)) return; emitted.add(id); }
+      put(n);
+    };
+    const stack = [root];
+    while (stack.length) {
+      if (--nodes <= 0 || now() > deadline) return false;
+      const v = stack.pop();
+      if (!v || typeof v !== 'object' || visited.has(v)) continue;
+      visited.add(v);
+      if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) { // IN ORDER — the load-bearing difference from collectMedia
+          const el = v[i];
+          const node = el && typeof el === 'object' && el.node ? el.node : el;
+          if (looksLikeHighlight(node)) emit(node);
+          if (el && typeof el === 'object') stack.push(el);
+        }
+        continue;
+      }
+      if (looksLikeHighlight(v)) emit(v);
+      let keys;
+      try { keys = Object.keys(v); } catch { continue; }
+      for (let i = 0; i < keys.length; i++) {
+        let val;
+        try { val = v[keys[i]]; } catch { continue; }
+        if (val && typeof val === 'object') stack.push(val);
+      }
+    }
+    return true;
+  }
+
   function ingestResponseText(text) {
-    for (const payload of parseJsonChunks(text)) collectMedia(payload, cachePut, { ms: 120 }, profilePut);
+    const payloads = parseJsonChunks(text);
+    for (const payload of payloads) collectMedia(payload, cachePut, { ms: 120 }, profilePut);
+    // A tray response is marked by the reel typename / highlight id — a cheap gate so the extra
+    // order-preserving pass only runs when a tray is actually present.
+    if (text.indexOf('XDTReelDict') >= 0 || text.indexOf('highlight:') >= 0) {
+      for (const payload of payloads) collectHighlights(payload, highlightPut, { ms: 120 });
+    }
   }
 
   // Wrap fetch + XHR before any page script runs. Ingestion is deferred off the response's
@@ -520,7 +627,11 @@
         // profile page server-EMBEDS its own profile payload instead of fetching it, so this is
         // the only path that ever sees bio/counts on a cold load. Missing it here is why the
         // v0.4.1 header came back null on the first real run (2026-07-17).
-        for (const payload of parseJsonChunks(s.textContent)) collectMedia(payload, cachePut, { ms: 150 }, profilePut);
+        const payloads = parseJsonChunks(s.textContent);
+        for (const payload of payloads) collectMedia(payload, cachePut, { ms: 150 }, profilePut);
+        if (s.textContent.indexOf('XDTReelDict') >= 0 || s.textContent.indexOf('highlight:') >= 0) {
+          for (const payload of payloads) collectHighlights(payload, highlightPut, { ms: 150 });
+        }
       } catch { /* skip blob */ }
     }
     return scanned;
@@ -592,7 +703,7 @@
           scanInlineScripts(); // the profile page server-embeds its own payload on first paint
           raw = profileCache.get(handle) || null;
         }
-        detail = safeJsonStringify({ reqId, profile: raw || null, cached: profileCache.size });
+        detail = safeJsonStringify({ reqId, profile: raw || null, highlights: highlightsFor(handle), cached: profileCache.size });
       } catch (err) {
         detail = JSON.stringify({ reqId, profile: null, error: String((err && err.message) || err) });
       }
@@ -701,8 +812,13 @@
     TAP_URL_RE,
     looksLikeProfile,
     profilePut,
+    looksLikeHighlight,
+    collectHighlights,
+    highlightPut,
+    highlightsFor,
     _mediaCache: mediaCache,
     _profileCache: profileCache,
+    _highlightCache: highlightCache,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api; // node tests

@@ -120,6 +120,51 @@ const IGFM_CRAWLER = (() => {
     }];
   }
 
+  // ---- highlights (v2 header; probed live 2026-07-18) --------------------
+  // The tray inject.js already cached (keyed by owner username, #22). Cap at the template's 8 rings,
+  // keep only items with a placeable cover, carry the title, preserve tray order.
+  const HIGHLIGHT_SLOTS = 8;
+  function normalizeHighlights(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const h of raw) {
+      if (!h || typeof h !== 'object') continue;
+      const cover_url = typeof h.cover_url === 'string' ? h.cover_url : null;
+      if (!cover_url) continue; // no cover → nothing to place; drop it, don't show an empty ring
+      out.push({ title: typeof h.title === 'string' ? h.title : null, cover_url });
+      if (out.length >= HIGHLIGHT_SLOTS) break;
+    }
+    return out;
+  }
+
+  // Highlight covers download like the avatar — one CDN image each — named with a LEADING
+  // UNDERSCORE and NO HYPHEN (`_highlight_01.jpg`). No-hyphen is load-bearing: manifest.cjs skips
+  // any file without a '<user>-<code>' hyphen split, so a hyphenated '_highlight-01.jpg' would be
+  // mis-parsed as a post (user '_highlight', shortcode '01') and placed on the grid (gotcha #20).
+  function planHighlights(highlights, handle, date) {
+    const dir = `${R.CAPTURE_FOLDER}/${seg(handle)}/${seg(date)}/`;
+    return (highlights || []).map((h, i) => {
+      let ext = 'jpg';
+      try {
+        const m = /\.([A-Za-z0-9]{2,4})$/.exec(new URL(h.cover_url, 'https://x/').pathname);
+        if (m && ['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(m[1].toLowerCase())) ext = m[1].toLowerCase();
+      } catch { /* keep jpg */ }
+      return {
+        url: h.cover_url,
+        filename: `${dir}_highlight_${String(i + 1).padStart(2, '0')}.${ext}`,
+        conflictAction: 'overwrite',
+      };
+    });
+  }
+
+  /** capture.json's `profile.highlights`: title + on-disk cover file, in tray order (1:1 with plan). */
+  function highlightEntries(highlights, plan) {
+    return (highlights || []).map((h, i) => ({
+      title: h.title || null,
+      cover_file: plan && plan[i] ? plan[i].filename.split('/').pop() : null,
+    }));
+  }
+
   /** One capture.json entry. `pinned` is informational — feed order already encodes the position. */
   function captureEntry(media, plan) {
     return {
@@ -248,6 +293,9 @@ const IGFM_CRAWLER = (() => {
     nextDelayMs,
     formatCount,
     profileFromMedia,
+    normalizeHighlights,
+    planHighlights,
+    highlightEntries,
     gridCodes,
     scrollUntil,
     sleep,
