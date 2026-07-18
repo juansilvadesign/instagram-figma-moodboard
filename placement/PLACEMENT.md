@@ -33,7 +33,8 @@ differ, so always navigate by name+size.
 |---|---|---|---|
 | Root | `Instagram - Claude Test` | 1350×3214 | at absolute (0,0) |
 | Post grid | `grid` | 938×2508 | 24 children, row-major, 4px gap |
-| Post slot ×24 | `cover` | **310×310** | leaf frame, `IMAGE`/`FILL` fill, no children |
+| Post slot ×24 | `cover` | **310×310** | `IMAGE`/`FILL` leaf; demo slots 0–2 carry an empty type-marker child (`pinned-post`/`clip-reels-content`/`carousel`) over the baked-in placeholder badge |
+| Type-badge source ×3 | `badge-reel` ▶ / `badge-carousel` ⧉ / `badge-pinned` 📌 | **20×20** | **page-level** white `VECTOR`s (siblings of the template, not inside it) — placement clones the right one onto each reel/carousel/pinned tile; see *Type badges* |
 | Avatar | `pfp` | **150×150** | in `hero > story > old-ring`; cornerRadius 75 |
 | Highlight ×8 | `image` | 76×76 | in `highlights-bar`; **not placed yet** |
 | Handle | `username` (TEXT) | — | |
@@ -116,30 +117,47 @@ numbers cross-checked exactly against an independent `web_profile_info` call.
   a real multi-line bio keeps the hug-width frame open (gotcha 7).
 - A **multi-line bio** (`\n`, emoji) reflows the single-line slot cleanly — verified.
 
+## Type badges (built 2026-07-17)
+
+Instagram overlays a small white glyph on the grid — **▶ on reels, ⧉ on carousels, 📌 on a pinned
+post**. The template's demo tiles show these baked into the placeholder JPEGs, so they vanish the
+moment a real cover replaces the photo; the badge has to be re-added as a node.
+
+- **Sources:** three 20×20 white `VECTOR`s at **page level** — `badge-reel`, `badge-carousel`,
+  `badge-pinned` — hand-pasted from [`assets/icons/{reel,carousel,pinned}.svg`](../assets/icons/).
+  The fork has **no SVG-insert tool** (only `clone_node`), so the vectors must physically live in
+  the file; these three are the clone sources. **Keep them** — deleting them silently disables
+  badges. (Slots 0–2 also still hold the original empty *marker* frames `pinned-post` /
+  `clip-reels-content` / `carousel`; those are position labels, not artwork — the real glyphs are
+  the page-level `badge-*` vectors.)
+- **Which tile gets which:** `manifest.cjs` tags every slot with `badge` ∈ `reel` / `carousel` /
+  `pinned` / `null` (`badgeFor`, unit-tested). A **pin outranks** the media-type glyph — a pinned
+  post is usually also a carousel (live: `@solarity.studio`'s pinned post is an 8-slide carousel) —
+  so a pinned reel/carousel shows the pin only. IG's real two-glyph case (pin **+** type) is
+  deliberately simplified to one.
+- **Placement:** `clone_node(<source>)` → `set_parent(clone, gridChild[i], x: tileW − 28, y: 8)`.
+  At the 310px tile that is **`x: 282, y: 8`** (20px glyph, 8px top-right inset). `set_parent`'s x/y
+  are parent-relative, so one call both reparents and positions. A `null` badge places nothing.
+- **No shadow** — the glyphs are pure white to match IG exactly (user's call). On a light cover a
+  white glyph can wash out; that's accepted.
+- **Proven 2026-07-17:** a live smoke test cloned `badge-reel` onto a template slot → exported → a
+  clean white ▶ at the right size/inset. The deterministic half is verified on the real
+  `@solarity.studio` manifest — 1 pinned + 13 reel + 10 carousel = 24, slot 0 (pinned reel) → `pinned`.
+
 ## Not built yet
 
-- **The ▶ badge on video tiles** (blocker B3's other half) — the poster lands, the badge doesn't.
-  Belongs in the template as a component, not as agent-created nodes (those would reflow the
-  auto-layout grid). **Build it subtractively:** there is **no visibility setter in the fork** —
-  `visible` appears only as a read-side guard in the plugin's scan code, so "hide the badge in the
-  template, reveal it per video tile" would need a new tool. Instead carry the badge on **all 24**
-  template tiles and `delete_node` it from the non-video ones — the same subtractive move placement
-  already makes for the highlights row, the `Followed by` row, and the uncaptured rows. The manifest
-  already knows which: `slots[].type` is `video` / `carousel` / `image`, taken from `capture.json`
-  and **not** from the filename (in covers mode a video is saved as a poster `.jpg`, so the
-  extension says `image` — see the sidecar override in `manifest.cjs`). IG's real grid badges
-  carousels too (⧉), and that same `type` already distinguishes them, so both badges come free if
-  the template carries both.
 - **Highlights** — deliberately **deleted** at placement rather than filled. Wiring them for real
   means the highlights tray, a different API surface the tap may never see — it would need its own
   probe first, like the profile crawl did. Gotchas #22/#26 set the bar: a page SSR-embeds the
   **viewer**, so a sloppy read of a new surface puts *your own* highlights on someone else's board.
-- **Overflow past 24 posts** — reported in `manifest.overflow`, not placed. A second cloned frame
-  inside the same Section would hold posts 25–48. **Unreachable from the shipped pipeline:** the
-  crawler caps at 24 (`crawler.js` → `DEFAULT_LIMIT`, itself pinned to this template's grid
-  capacity), so only a hand-captured folder of >24 single clicks — the workflow the crawler
-  replaced — can overflow at all. Building the spill is therefore **not polish on top of what
-  exists**; it starts by reversing the 2026-07-17 decision that a capture is 24 posts, which was
-  taken for grid capacity **and** the shortest crawl — i.e. the least rate-limit exposure, which is
-  this tool's main ToS mitigation. Decide you want bigger captures first; the placement half is the
-  easy part.
+## Decided against — do not build
+
+- **Spill past 24 posts (closed 2026-07-17).** ~~A second cloned frame inside the same Section would
+  hold posts 25–48.~~ **A capture is 24 posts, full stop.** It was never reachable anyway — the
+  crawler caps at 24 (`crawler.js` → `DEFAULT_LIMIT`, pinned to this template's grid capacity), so
+  only a hand-captured folder of >24 single clicks (the workflow the crawler replaced) could
+  overflow at all. Building it would mean raising that cap → a longer crawl → **more rate-limit
+  exposure, which is this tool's main ToS mitigation** — a bad trade for a bigger board. Don't
+  re-open it as "easy polish": the placement half *is* easy, and that's the trap; the cost is in the
+  crawl. **`manifest.overflow` stays** — it honestly reports "you handed me N, I placed 24" on a
+  hand-captured folder. It just never grows a frame.

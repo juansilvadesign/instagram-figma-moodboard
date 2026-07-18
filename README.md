@@ -154,17 +154,24 @@ hand-captured folder; capped at the template's 24 slots; a carousel places its c
 places its poster. No copy step — WSL reads the Windows Downloads folder in place. Map + gotchas:
 [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
-**Still open — all optional polish, nothing blocking.** Both halves of v2 shipped and are
+**Type badges (▶ reel · ⧉ carousel · 📌 pinned) — BUILT 2026-07-17.** `manifest.cjs` tags each slot
+with a `badge` (`badgeFor`, unit-tested; a pin outranks the media-type glyph); placement clones the
+matching white-vector source — `badge-reel` / `badge-carousel` / `badge-pinned`, hand-pasted into
+Figma from [`assets/icons/`](assets/icons/) — into the tile's top-right corner. The reel glyph is
+live-verified on a real tile; a full 3-type pass on a placed board is all that's left. Recipe:
+[`PLACEMENT.md`](placement/PLACEMENT.md) → Type badges.
+
+**Still open — optional polish, nothing blocking.** Both halves of v2 shipped and are
 Chrome-verified; the crawler and `capture.json` feed order are **built**, not pending.
 
-- **▶ badge on video tiles** — the poster lands, the badge doesn't. Needs the badge in the
-  *template* first (agent-created nodes reflow the auto-layout grid); placement then deletes it
-  from the photo tiles. See [`placement/PLACEMENT.md`](placement/PLACEMENT.md) → Not built yet.
 - **Highlights** — deleted at placement today, which is honest. Wiring them for real needs its own
   probe first: the tray is a surface the tap may never see.
-- **Spill past 24 posts** — reported in `manifest.overflow`, never placed, and **unreachable from
-  the crawl**, which caps at 24 on purpose. Building it means first deciding you want bigger
-  captures (see PLACEMENT.md for why 24).
+
+**Decided against (2026-07-17) — spill past 24 posts.** A capture is 24 posts, full stop. It was
+never reachable anyway (the crawl caps at 24), and building it would mean raising that cap → a
+longer crawl → more rate-limit exposure, which is this tool's main ToS mitigation. Not worth it for
+a bigger board. **`manifest.overflow` stays** — it honestly reports "you handed me N, I placed 24"
+for a hand-captured folder; it just never grows a second frame.
 
 **Closed as void:** talk-to-figma **server detection**. The old plan gated the capture button on the
 socket server being up, back when capture and placement were one flow. The shipped design decouples
