@@ -30,6 +30,7 @@
 | R6 | **Cross-capture duplicate report** — identify identical downloaded bytes across dated captures and report them before placement; never silently delete source media. | New local manifest/index | Activate when archive size or repeated tiles becomes a visible cost. Retires the assumption that content hashes are sufficient and that repeated media should be reported rather than intentionally preserved as historical evidence. |
 | R7 | **Resumable profile capture** — resume a genuinely interrupted 24-post run without re-downloading completed files, while retaining dated-folder honesty and owner isolation. | Profile crawler + capture sidecar | Activate only after a real stall makes the existing cheap, idempotent same-day rerun painful. Retires the assumption that resume state is safer/simpler than rerunning a bounded 2–4 minute crawl. |
 | R8 | **Optional local orchestration** — detect a completed capture and offer placement without making Figma availability a precondition for capture. | New local watcher or n8n alternative | Activate only if capture volume makes the current manual “place this capture” handoff the dominant cost. Retires the assumption that a persistent runtime is worth its operational and privacy surface. |
+| R9 | **Story and highlight download from the viewer** — while a story or highlight is on screen, a download button inside the story viewer (the same pattern as the reel/carousel button) saves it, from public accounts and from private ones this login follows. The full profile capture is unchanged: highlight covers only, never stories. | `content.js` (a story-viewer anchor), `inject.js` (a media lookup keyed on the story item id, since a story has no shortcode), `resolver.js` (story URLs + filenames) | **Requested 2026-09-27; activate on the user's go.** Stories were allowed the same day (`CLAUDE.md` hard constraints). Retires the assumption that stories sit outside the authorization boundary: one click on a story the user is already watching is the same consent as the post button. Open questions (what one click saves, Close Friends, filenames) live in the [idea note](../../ideas/instagram-stories-highlights-download.md). |
 
 ## Next increment when activated — R1 drift recovery
 
@@ -60,7 +61,8 @@ until a real regression exists.
 
 ## Out of scope / decided against
 
-- **Stories and DMs.** They are ephemeral/private surfaces and outside the authorization boundary.
+- **DMs.** A private surface, outside the authorization boundary. Stories left this list on
+  2026-09-27: they are allowed through the story-viewer button only (R9).
 - **Unattended bulk or competitor harvesting.** Capture remains user-triggered and bounded to the
   media/profile the logged-in user is intentionally viewing.
 - **More than 24 profile posts per capture.** The template has 24 slots and the shorter crawl is

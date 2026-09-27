@@ -187,4 +187,8 @@ them — the crawl writes a folder and never touches Figma, so gating it on Figm
 capture that doesn't need it. Reaching the socket would also need `host_permissions`, which this
 extension deliberately doesn't take (permissions stay `["downloads"]`).
 
-**Never:** stories · DMs.
+**Allowed (2026-09-27), not built yet — stories.** A download button inside the story viewer,
+one click at a time while you watch, is [`ROADMAP.md`](ROADMAP.md) R9. The full profile capture
+still takes highlight covers only.
+
+**Never:** DMs.

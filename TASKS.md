@@ -153,8 +153,9 @@ of the live template and a Figma export check.
 
 ## Cross-cutting checklist (apply to every change)
 
-- [ ] **Authorized and user-initiated only.** No DMs, stories, login/DRM bypass, unattended mass
-  harvesting, or data the logged-in user is not already authorized to view.
+- [ ] **Authorized and user-initiated only.** No DMs, login/DRM bypass, unattended mass harvesting,
+  or data the logged-in user is not already authorized to view. Stories only through the
+  story-viewer button, one click at a time (R9, allowed 2026-09-27).
 - [ ] **Permissions stay minimal.** Adding `host_permissions`, cookies, native messaging, storage,
   analytics, or a server requires a newly demonstrated need and an explicit decision.
 - [ ] **Data, not pixels.** Resolve media from Instagram's data; do not walk carousel UI or save

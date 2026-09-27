@@ -33,9 +33,14 @@ slot 0, zero ffmpeg). Recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md)
 ## Hard constraints (never violate)
 
 - **Authorized, user-initiated, single-post per click.** Media the user is already viewing as a
-  logged-in follower. No bulk/timeline harvesting in the MVP, no login-wall or DRM bypass, no DMs,
-  no stories. (v2's full-profile mode is the considered exception, spec'd in the idea note with a
-  safe delay.)
+  logged-in follower. No bulk/timeline harvesting in the MVP, no login-wall or DRM bypass, no DMs.
+  (v2's full-profile mode is the considered exception, spec'd in the idea note with a safe delay;
+  it captures highlight **covers** only, never stories.)
+- **Stories and highlights: only through the story-viewer button** (allowed 2026-09-27,
+  [`ROADMAP.md`](ROADMAP.md) R9). One click at a time, while the user is watching, from accounts
+  this login can already open: public, or private and followed. Never from the profile page or
+  the story tray, and never unattended or in the background. Spec:
+  [`knowledge/ideas/instagram-stories-highlights-download.md`](../../ideas/instagram-stories-highlights-download.md).
 - **Client-side only for the MVP.** No server, no native messaging, no analytics.
 - **Clone sibling patterns, never couple** to any workspace runtime (no psiativa n8n/Postgres, no
   juansilva portfolio). This is a shared `knowledge/` tool.
