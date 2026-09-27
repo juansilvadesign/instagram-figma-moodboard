@@ -46,9 +46,9 @@ unbounded redesign. Re-plan after the live verification for each release.
 ## ▶ Next session — start here
 
 **▶ R9 is active (started 2026-09-27):** story and highlight download from the story viewer, plus
-the carousel click rule (a plain click saves the slide on screen, Shift-click every slide). Step 1 is
-`probes/stories-probe.js`, run in a logged-in Chrome on one story, one highlight and one carousel;
-the build follows from what it finds. Decisions and state live in ROADMAP R9 and the
+the carousel click rule (a plain click saves the slide on screen, Shift-click every slide). The probe
+(`probes/stories-probe.js`) ran live and the build is in (v0.5.0, Node 134/134). **Next: the owner's
+Chrome pass** (README → Verify in Chrome, the R9 items). Decisions and state live in ROADMAP R9 and the
 [idea note](../../ideas/instagram-stories-highlights-download.md).
 
 **Apart from R9 there is no unfinished product feature. The other open work is truth maintenance,

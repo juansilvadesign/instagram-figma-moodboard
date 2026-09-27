@@ -2,13 +2,16 @@
 
 Capture Instagram inspiration from a **logged-in Chrome profile**, two ways:
 
-- **Single post** — an injected button on any post saves its image, video, or full carousel to
-  `Downloads/instagram-captures/<username>-<shortcode>[-NN].<ext>`.
+- **Single post** — an injected button saves an image/video or the carousel slide on screen;
+  Shift-click saves every slide to `Downloads/instagram-captures/<username>-<shortcode>[-NN].<ext>`.
+- **Story viewer (R9)** — a button inside an open story or highlight saves the item on screen;
+  Shift-click saves every item of that one story/highlight.
 - **Whole profile (v2)** — a "Capture profile" button saves the grid's most recent 24 covers +
   `capture.json` to `Downloads/instagram-captures/<handle>/<date>/`, which a Claude agent then
   auto-places into a Figma Instagram-UI template as a dated moodboard Section.
 
-**Both halves ran end-to-end 2026-07-17.** Idea/spec history:
+**Post and profile capture ran end-to-end 2026-07-17.** The R9 story viewer button still needs its
+manual Chrome pass. Idea/spec history:
 [the idea note](../../ideas/instagram-figma-moodboard.md). Working conventions + the hard-won
 gotchas: [`CLAUDE.md`](CLAUDE.md). Figma recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
 
@@ -25,9 +28,16 @@ After code changes: `chrome://extensions` → reload the extension → **reload 
 
 ## Use
 
-Click the arrow on any post — feed, profile-grid modal, or `/p/…` / `/reel/…` permalink. A toast
-reports progress and the saved file count. Carousels download every item, numbered `-01, -02, …`.
-Videos save as progressive MP4 (audio included).
+Click the arrow on any post — feed, profile-grid modal, or `/p/…` / `/reel/…` permalink. A plain
+click on a carousel saves the visible slide; Shift-click saves every slide. Slide filenames keep
+their original number (`-01`, `-02`, …) in either mode. Single images and reels save normally.
+
+Inside `/stories/…`, click the arrow after Like in the viewer's bottom bar to save the item being
+watched, or Shift-click to save every item of that account's story/highlight. Story files use
+`<user>-story-<local-posted-date>-<pk>.<ext>`; highlight items use
+`<user>-highlight-<local-posted-date>-<pk>.<ext>`, both under `Downloads/instagram-captures/`.
+The viewer must be open; the profile capture still saves highlight covers only. If the button says
+the story data was not captured, reload the Instagram tab so the network tap starts at page load.
 
 ## Verify in Chrome (manual regression checklist)
 
@@ -42,7 +52,19 @@ This WSL env has no GUI Chrome, so the automated tests can't click the real page
 as **verified** when, in a logged-in Chrome:
 
 - [ ] Feed **single image** post → 1 correctly-named `.jpg`/`.webp` in `Downloads/instagram-captures/`
-- [ ] Feed **carousel** → all items land, `-01…-NN`, mixed image/video types correct
+- [ ] Feed **carousel** → plain click saves only the slide on screen with its `-NN` number;
+      Shift-click saves all `-01…-NN`, mixed image/video types correct
+- [ ] Carousel in a **post modal** and **direct permalink** → plain click saves the displayed
+      slide; Shift-click saves all slides; an unidentifiable slide says it saved all available slides
+- [ ] **User story** with at least two items → one viewer button after Like in the bottom bar;
+      plain click saves the item on screen, Shift-click saves the watched account's full story
+      without neighbour items
+- [ ] **Highlight** with at least two items → one viewer button; progress bar selects the
+      item on screen on plain click, Shift-click saves that highlight only
+- [ ] **Close Friends** story visible to this login → plain and Shift clicks work without
+      special treatment; file names contain the item pk, not its long code
+- [ ] **Story video with sound** → `.mp4` that plays with audio; the saved URL is a CDN file,
+      not the viewer's `blob:` URL
 - [ ] **Video/Reel** post → `.mp4` that plays **with audio**
 - [ ] **Reel with a music/audio attribution** (e.g. `/reel/DY_HBkqxebO/`) → saves the `.mp4`, not
       6 poster JPGs; console `shortcode=<realcode>` (never `audio`) and `resolved via network_cache`
@@ -52,12 +74,13 @@ as **verified** when, in a logged-in Chrome:
 - [ ] **Profile grid → modal** → button present in the modal, download works
 - [ ] **Permalink page** (`/p/<code>/`) → button present, download works
 - [ ] **Feed carousel with deferred data, WARM tap** (open via feed → modal, e.g.
-      `DYw5KdMDH6a`) → ALL N slides land via `network_cache` (or `embedded_json`)
+      `DYw5KdMDH6a`) → plain click saves the visible slide; Shift-click saves all N via
+      `network_cache` (or `embedded_json`)
 - [ ] **Ad/sponsored carousel via DIRECT permalink, COLD tap** (paste `/p/DYw5KdMDH6a/` into a
-      fresh tab, click) → ALL N slides still land; `[IGFM] media resolved via media_info` — the
+      fresh tab, Shift-click) → ALL N slides still land; `[IGFM] media resolved via media_info` — the
       embedded cover lies (single image, `media_type 1`), so it's confirmed/completed from the
       media `pk` (v0.3.2 fix for the cold masked-carousel case)
-- [ ] **Sponsored/ad post — carousel** → ALL slides land (any of `network_cache` /
+- [ ] **Sponsored/ad post — carousel** → Shift-click saves ALL slides (any of `network_cache` /
       `embedded_json` / `ancestors:…`)
 - [ ] Regular posts resolve in-page (instant) or fall back to `web_info`/`graphql` — check the
       `[IGFM] media resolved via …` console line; no click may freeze the page (>0.5 s jank);
@@ -72,8 +95,8 @@ point, same as the twitter-video-downloader sibling.
 ## Automated tests (run in WSL)
 
 ```bash
-node test/run-tests.cjs   # resolver + in-page engines (tap cache, payload scan, fiber walk)
-                          # + the v2 placement manifest + the profile crawler — 119 tests
+node test/run-tests.cjs   # resolver + in-page engines (including R9 story tap)
+                          # + the v2 placement manifest + the profile crawler — 133 tests
 node --check extension/*.js placement/*.cjs
 ```
 
@@ -187,8 +210,8 @@ them — the crawl writes a folder and never touches Figma, so gating it on Figm
 capture that doesn't need it. Reaching the socket would also need `host_permissions`, which this
 extension deliberately doesn't take (permissions stay `["downloads"]`).
 
-**Allowed (2026-09-27), not built yet — stories.** A download button inside the story viewer,
-one click at a time while you watch, is [`ROADMAP.md`](ROADMAP.md) R9. The full profile capture
-still takes highlight covers only.
+**R9 stories and highlights — built, Chrome verification pending.** The button lives only inside
+the story viewer and downloads on the user's click. The full profile capture still takes
+highlight covers only.
 
 **Never:** DMs.

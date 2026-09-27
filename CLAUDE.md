@@ -9,13 +9,16 @@ blockers, Figma placement contract) lives at
 
 A personal Manifest V3 Chrome extension used **inside a logged-in Chrome profile**. The shipped
 MVP is **single-post capture**: an injected button on any Instagram post downloads that post's
-media — image, video, or every item of a carousel — to `Downloads/instagram-captures/`, named
-`<username>-<shortcode>[-NN].<ext>`. The v2 (full-profile → Figma moodboard via the talk-to-figma
+media — image, video, or the carousel slide on screen (Shift-click: every slide, since v0.5.0) — to
+`Downloads/instagram-captures/`, named `<username>-<shortcode>[-NN].<ext>`. The v2 (full-profile → Figma moodboard via the talk-to-figma
 MCP) is the tool's real differentiator and is **COMPLETE + verified end-to-end 2026-07-17**: the
 fixed "Capture profile" button crawls the grid into `Downloads/instagram-captures/<handle>/<date>/`
 (24 covers + `_avatar.jpg` + `capture.json`), and the agent places that folder into a dated Figma
 Section — proven on a real profile (`@solarity.studio`: 24/24 posts, 0 skipped, pinned post at
 slot 0, zero ffmpeg). Recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
+**R9 (v0.5.0, built 2026-09-27; Node-verified, Chrome pass PENDING):** a button in the story viewer's
+bottom bar (right after Like) saves the story or highlight item on screen; Shift-click saves that
+whole story or highlight, as `<user>-story|highlight-<YYYY-MM-DD>-<pk>.<ext>`.
 
 ## Decisions (2026-07-07 build)
 
@@ -62,6 +65,8 @@ extension/
                    JSON scan → fiber walk; exports for Node tests. The tap fills TWO caches from
                    one walk — `_mediaCache` (shortcode → raw media) and `_profileCache`
                    (username → raw profile payload: bio/link/counts, for the v2 crawl header).
+                   R9 adds `storyReelCache` (exact owner username | `highlight:<id>` → sanitized
+                   reel, item order kept), answered over the `igfm-request-story` bridge.
 placement/
   manifest.cjs     v2, agent-side: capture folder → ordered placement manifest (which file lands
                    in which grid slot). Pure half exported for tests; CLI does the I/O + ffmpeg
@@ -293,6 +298,41 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     handle (#22): a "first seen" or "richest wins" rule would have written **Juan's own bio and
     identity onto someone else's moodboard**. That risk was real, not hypothetical — the wrong
     object is sitting right there in the page.
+
+27. **Story reels ride `/graphql/query`, several per response — key them by exact owner.** Probed live
+    2026-09-27 (`probes/stories-probe.js`): `PolarisStoriesV3ReelPageGallery[Pagination]Query` and
+    `PolarisStoriesV3HighlightsPageQuery` return `data.xdt_api__v1__feed__reels_media__connection`,
+    whose `XDTReelDict` nodes (`reel_type` `user_reel` | `highlight_reel`; id = the owner's pk |
+    `highlight:<n>`) hold the watched reel **plus prefetched neighbours** (other accounts). So
+    `storyReelCache` is keyed by exact owner username / `highlight:<id>` (the #22 rule). A cold F5 of a
+    `/stories/…` URL did **not** embed the watched reel in SSR: it arrives over the network, which the
+    `document_start` tap sees. `{items:[post]}` from `media/info` / web_info is **not** a reel — require
+    `XDTReelDict`, a `reel_type` or a `highlight:` id.
+28. **Which story item is on screen.** A user-story URL `/stories/<user>/<pk>/` carries the item pk
+    (updated on every advance). A **highlight URL never changes** across its items, so its item comes
+    from the displayed `<img>` basename (images) or the **progress row**: N thin bars at the top of the
+    card, **exactly one of which has an element child** — its index is the item, and N equalled the
+    reel's item count on 5/5 marks. The viewer's `<video>` is `blob:` with no poster (gotcha #3), so a
+    highlight video is found only by the progress row.
+29. **Story `video_versions` have NULL `width`/`height`** (3 entries, types 101/102/103, on 18/18 probed
+    videos), so "pick the widest" degenerates: pick the lowest `type`. `has_audio: false` on 4/18 was
+    on short silent clips — ffprobe a saved file before calling a missing track a DASH problem (the
+    ROADMAP contingency).
+30. **The story viewer mounts neighbours.** Desktop shows the watched card (≈444×790, centred) plus up
+    to 4 side previews of OTHER accounts, and can mount a neighbour card below it. Search only the
+    active card (largest media nearest the centre) and bound the bottom-bar search by its bottom. The
+    button goes right after **Like** — the leftmost labelled svg in the card's bottom 20%, outside the
+    reply field: **Close Friends items have no Share button**, so "after Like" is between Like and
+    Share, or last. There is no `<section>`, so `findActionBar` never applies.
+31. **The carousel slide on screen comes from the DOM; the file still comes from the data.** Each slide
+    `li` carries `transform: translateX(i × width)` (virtualized; a 1 px spacer `li` exists), so
+    `index = round(translateX / li width)`, and the visible `img` basename also matches
+    `carousel_media[i]`'s candidates. Probed in the post modal only; the feed and permalink are part of
+    R9's Chrome pass. If neither signal works, a plain click saves all slides and says so.
+32. **A story item's owner is provable without its username.** Every probed item had a `user` key, but
+    whether it holds `username` is unverified; its id is `<pk>_<ownerId>`, and that suffix equalled the
+    reel owner's pk on 26/26 items. `sanitizeStoryReel` accepts a username match, else an owner-id
+    match, and drops any positive mismatch (#22: a wrong owner is worse than none).
 
 ## Validate / test
 
