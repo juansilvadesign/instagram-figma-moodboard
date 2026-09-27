@@ -537,14 +537,131 @@
     return true;
   }
 
-  function ingestResponseText(text) {
-    const payloads = parseJsonChunks(text);
-    for (const payload of payloads) collectMedia(payload, cachePut, { ms: 120 }, profilePut);
-    // A tray response is marked by the reel typename / highlight id — a cheap gate so the extra
-    // order-preserving pass only runs when a tray is actually present.
-    if (text.indexOf('XDTReelDict') >= 0 || text.indexOf('highlight:') >= 0) {
-      for (const payload of payloads) collectHighlights(payload, highlightPut, { ms: 120 });
+  // Viewer reels are distinct from `{items:[post]}` web_info/media-info wrappers. Preserve
+  // connection edge order: it is also the viewer's progress order (gotcha #17).
+  function looksLikeStoryReel(v) {
+    try {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+      const strong = v.__typename === 'XDTReelDict' || v.reel_type != null ||
+        /^highlight:\d+$/.test(String(v.id || ''));
+      return strong && Array.isArray(v.items) && v.items.some((item) => item &&
+        (item.product_type === 'story' || item.expiring_at != null));
+    } catch { return false; }
+  }
+
+  function collectStoryReels(root, put, budget) {
+    const deadline = now() + (budget && budget.ms !== undefined ? budget.ms : 120);
+    let nodes = budget && budget.nodes !== undefined ? budget.nodes : 150000;
+    const visited = new Set(), stack = [root];
+    while (stack.length) {
+      if (--nodes <= 0 || now() > deadline) return false;
+      const v = stack.pop();
+      if (!v || typeof v !== 'object' || visited.has(v)) continue;
+      visited.add(v);
+      if (Array.isArray(v)) {
+        for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]);
+        continue;
+      }
+      if (looksLikeStoryReel(v)) {
+        put(v); // let storyReelPut keep the larger copy if this payload repeats the reel
+      }
+      let names;
+      try { names = Object.keys(v); } catch { continue; }
+      for (let i = names.length - 1; i >= 0; i--) {
+        let child;
+        try { child = v[names[i]]; } catch { continue; }
+        if (child && typeof child === 'object') stack.push(child);
+      }
     }
+    return true;
+  }
+
+  const storyReelCache = new Map();
+
+  // An item belongs to the reel owner when its own username says so. The live probe proved every
+  // story item carries a `user` key but not that it holds a username, so an item WITHOUT one is
+  // matched by owner id instead: `user.pk`/`user.id`, else the `<pk>_<ownerId>` id suffix, which
+  // equalled the reel owner's pk on 26/26 probed items (2026-09-27). A positive mismatch on either
+  // signal drops the item: a wrong owner is worse than none (gotcha #22).
+  function ownsStoryItem(item, owner, ownerPk) {
+    const u = item.user && typeof item.user === 'object' ? item.user : null;
+    if (u && typeof u.username === 'string' && u.username) return u.username.toLowerCase() === owner.toLowerCase();
+    const idOwner = u && (u.pk != null || u.id != null) ? String(u.pk != null ? u.pk : u.id)
+      : item.id != null && String(item.id).indexOf('_') > 0 ? String(item.id).split('_')[1] : null;
+    return !!ownerPk && !!idOwner && idOwner === ownerPk;
+  }
+
+  function sanitizeStoryReel(reel) {
+    if (!looksLikeStoryReel(reel)) return null;
+    const owner = reel.user && reel.user.username;
+    if (typeof owner !== 'string' || !owner) return null;
+    const ownerPk = reel.user.pk != null ? String(reel.user.pk) : reel.user.id != null ? String(reel.user.id) : null;
+    const kind = reel.reel_type === 'highlight_reel' || /^highlight:\d+$/.test(String(reel.id || ''))
+      ? 'highlight' : 'story';
+    const id = String(reel.id || '');
+    if (kind === 'highlight' && !/^highlight:\d+$/.test(id)) return null;
+    const items = [];
+    for (const item of reel.items) {
+      if (!item || !ownsStoryItem(item, owner, ownerPk)) continue;
+      if (item.product_type !== 'story' && item.expiring_at == null) continue;
+      const video = Array.isArray(item.video_versions) ? item.video_versions.filter((v) => v && typeof v === 'object') : [];
+      const candidates = item.image_versions2 && Array.isArray(item.image_versions2.candidates)
+        ? item.image_versions2.candidates.filter((c) => c && typeof c === 'object') : [];
+      items.push({
+        pk: item.pk == null ? null : String(item.pk), id: item.id == null ? null : String(item.id),
+        code: item.code == null ? null : String(item.code),
+        taken_at: item.taken_at == null ? null : item.taken_at,
+        expiring_at: item.expiring_at == null ? null : item.expiring_at,
+        media_type: item.media_type == null ? null : item.media_type,
+        product_type: item.product_type == null ? null : item.product_type,
+        audience: item.audience == null ? null : item.audience,
+        user: { username: owner }, // ownsStoryItem proved it; the item may carry no username
+        video_versions: video.map((v) => ({ type: v.type, width: v.width, height: v.height, url: v.url })),
+        image_versions2: { candidates: candidates.map((c) => ({ width: c.width, height: c.height, url: c.url })) },
+        has_audio: item.has_audio == null ? null : item.has_audio,
+        video_duration: item.video_duration == null ? null : item.video_duration,
+      });
+    }
+    return items.length ? { id, owner, kind, title: kind === 'highlight' ? reel.title || null : null, items } : null;
+  }
+
+  function storyReelPut(reel) {
+    const clean = sanitizeStoryReel(reel);
+    if (!clean) return;
+    const key = clean.kind === 'highlight' ? clean.id : clean.owner.toLowerCase();
+    const previous = storyReelCache.get(key);
+    const richness = (r) => r.items.reduce((n, item) => n +
+      item.video_versions.filter((v) => v.url).length +
+      item.image_versions2.candidates.filter((c) => c.url).length, 0);
+    if (previous && (previous.items.length > clean.items.length ||
+      (previous.items.length === clean.items.length && richness(previous) >= richness(clean)))) return;
+    if (storyReelCache.size >= 200 && !previous) storyReelCache.delete(storyReelCache.keys().next().value);
+    storyReelCache.set(key, clean);
+  }
+
+  function storyReelFor(route) {
+    if (!route || typeof route !== 'object') return null;
+    if (route.kind === 'highlight' && /^\d+$/.test(String(route.highlightId || '')))
+      return storyReelCache.get('highlight:' + route.highlightId) || null;
+    if (route.kind === 'story' && typeof route.username === 'string')
+      return storyReelCache.get(route.username.toLowerCase()) || null;
+    return null;
+  }
+
+  function ingestPayloadText(text, ms) {
+    const payloads = parseJsonChunks(text);
+    for (const payload of payloads) collectMedia(payload, cachePut, { ms }, profilePut);
+    if (text.indexOf('XDTReelDict') >= 0 || text.indexOf('highlight:') >= 0) {
+      for (const payload of payloads) collectHighlights(payload, highlightPut, { ms });
+    }
+    if (text.indexOf('reels_media') >= 0 || text.indexOf('"reel_type"') >= 0 || text.indexOf('XDTReelDict') >= 0) {
+      for (const payload of payloads) collectStoryReels(payload, storyReelPut, { ms });
+    }
+    return payloads.length;
+  }
+
+  function ingestResponseText(text) {
+    return ingestPayloadText(text, 120);
   }
 
   // Wrap fetch + XHR before any page script runs. Ingestion is deferred off the response's
@@ -627,11 +744,7 @@
         // profile page server-EMBEDS its own profile payload instead of fetching it, so this is
         // the only path that ever sees bio/counts on a cold load. Missing it here is why the
         // v0.4.1 header came back null on the first real run (2026-07-17).
-        const payloads = parseJsonChunks(s.textContent);
-        for (const payload of payloads) collectMedia(payload, cachePut, { ms: 150 }, profilePut);
-        if (s.textContent.indexOf('XDTReelDict') >= 0 || s.textContent.indexOf('highlight:') >= 0) {
-          for (const payload of payloads) collectHighlights(payload, highlightPut, { ms: 150 });
-        }
+        ingestPayloadText(s.textContent, 150);
       } catch { /* skip blob */ }
     }
     return scanned;
@@ -681,6 +794,26 @@
 
   if (typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
     if (typeof window !== 'undefined') installNetworkTap();
+    document.addEventListener('igfm-request-story', (e) => {
+      let req = e && e.detail;
+      if (typeof req === 'string') {
+        try { req = JSON.parse(req); } catch { req = null; }
+      }
+      if (!req || !req.reqId) return;
+      const reqId = String(req.reqId);
+      let detail;
+      try {
+        let reel = storyReelFor(req.route);
+        if (!reel) {
+          scanInlineScripts();
+          reel = storyReelFor(req.route);
+        }
+        detail = JSON.stringify({ reqId, reel: reel || null });
+      } catch (err) {
+        detail = JSON.stringify({ reqId, reel: null, error: String((err && err.message) || err) });
+      }
+      document.dispatchEvent(new CustomEvent('igfm-response-story', { detail }));
+    });
     // Profile payload lookup (v2 crawl header). Answers ONLY from what the page already fetched —
     // it issues no request of its own. Looked up by exact username, so a page full of suggested
     // users can't leak a stranger's bio onto the board.
@@ -816,9 +949,18 @@
     collectHighlights,
     highlightPut,
     highlightsFor,
+    looksLikeStoryReel,
+    collectStoryReels,
+    sanitizeStoryReel,
+    storyReelPut,
+    storyReelFor,
+    ingestPayloadText,
+    ingestResponseText,
+    scanInlineScripts,
     _mediaCache: mediaCache,
     _profileCache: profileCache,
     _highlightCache: highlightCache,
+    _storyReelCache: storyReelCache,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api; // node tests

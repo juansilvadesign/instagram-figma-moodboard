@@ -151,8 +151,233 @@ function postContainers() {
   return found;
 }
 
+function visibleRect(el) {
+  if (!el || !el.getBoundingClientRect) return null;
+  try {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || r.right <= 0 || r.bottom <= 0 ||
+      r.left >= innerWidth || r.top >= innerHeight) return null;
+    const style = getComputedStyle(el);
+    return style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 ? null : r;
+  } catch { return null; }
+}
+
+function storyCardFor(media, mediaRect) {
+  let node = media.parentElement, best = null, bestScore = -Infinity;
+  for (let depth = 0; node && node !== document.body && depth < 18; depth++, node = node.parentElement) {
+    const r = visibleRect(node);
+    if (!r) continue;
+    if (r.width > Math.min(innerWidth * 0.88, mediaRect.width * 1.8 + 100) ||
+      r.height > innerHeight + 80) break;
+    if (r.width < mediaRect.width * 0.75 || r.height < mediaRect.height * 0.8) continue;
+    if (r.height < r.width * 1.1) continue; // story cards are portrait; feed posts behind them are not
+    const hasReply = !!node.querySelector('textarea');
+    const hasControls = !!node.querySelector('svg[aria-label]');
+    const score = (hasReply ? 4 : 0) + (hasControls ? 2 : 0) +
+      Math.min(1, r.width * r.height / (innerWidth * innerHeight));
+    if (score >= bestScore) { best = node; bestScore = score; }
+  }
+  return best;
+}
+
+function activeStoryCard() {
+  const candidates = [];
+  for (const media of document.querySelectorAll('img, video')) {
+    const mr = visibleRect(media);
+    if (!mr || mr.width < 100 || mr.height < 150) continue;
+    const card = storyCardFor(media, mr);
+    if (!card) continue;
+    const cr = visibleRect(card);
+    if (!cr) continue;
+    const distance = Math.hypot(
+      (mr.left + mr.width / 2 - innerWidth / 2) / innerWidth,
+      (mr.top + mr.height / 2 - innerHeight / 2) / innerHeight,
+    );
+    const area = mr.width * mr.height / (innerWidth * innerHeight);
+    candidates.push({ card, media, rect: cr, score: area - distance * 2 });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0] || null;
+}
+
+function removeStoryButtons() {
+  for (const btn of document.querySelectorAll('.igfm-story-btn')) removeStoryButton(btn);
+}
+
+function removeStoryButton(btn) {
+  const slot = btn.parentElement && btn.parentElement.classList.contains('igfm-story-slot')
+    ? btn.parentElement : null;
+  const card = btn.closest('.igfm-story-anchor');
+  (slot || btn).remove();
+  if (card && !card.querySelector('.igfm-story-overlay')) card.classList.remove('igfm-story-anchor');
+}
+
+function storyBottomAnchor(active) {
+  const { card, rect: cr } = active;
+  let chosen = null;
+  for (const svg of card.querySelectorAll('svg[aria-label]')) {
+    const r = visibleRect(svg);
+    if (!r || r.top < cr.top + cr.height * 0.8 || r.bottom > cr.bottom + 4) continue;
+    if (svg.closest('textarea, form, [contenteditable]')) continue;
+    let wrapper = svg.closest('[role="button"], button, a');
+    if (!wrapper || wrapper === card || !card.contains(wrapper)) wrapper = svg.parentElement;
+    if (!wrapper || wrapper === card || !wrapper.parentElement ||
+      !card.contains(wrapper.parentElement)) continue;
+    if (!chosen || r.left < chosen.left) chosen = { wrapper, left: r.left };
+  }
+  return chosen && chosen.wrapper;
+}
+
+function injectStoryButton(active) {
+  const card = active && active.card;
+  if (!card) { removeStoryButtons(); return; }
+  const existing = [...document.querySelectorAll('.igfm-story-btn')];
+  const current = existing.find((btn) => card.contains(btn));
+  for (const btn of existing) if (btn !== current) removeStoryButton(btn);
+  const likeWrapper = storyBottomAnchor(active);
+  if (current) {
+    const slot = current.parentElement && current.parentElement.classList.contains('igfm-story-slot')
+      ? current.parentElement : null;
+    if (likeWrapper && slot) {
+      if (slot.parentElement !== likeWrapper.parentElement ||
+        slot.previousElementSibling !== likeWrapper) likeWrapper.after(slot);
+      const classes = (typeof likeWrapper.className === 'string' ? likeWrapper.className : '') +
+        ' igfm-story-slot';
+      if (slot.className !== classes) slot.className = classes;
+      return;
+    }
+    if (!likeWrapper && current.classList.contains('igfm-story-overlay')) return;
+    removeStoryButton(current);
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.title = 'Download story (Shift-click: all items in this story)';
+  btn.setAttribute('aria-label', 'Download story');
+  btn.innerHTML = dlSvg(24);
+  if (likeWrapper) {
+    const slot = document.createElement('div');
+    slot.className = (typeof likeWrapper.className === 'string' ? likeWrapper.className : '') +
+      ' igfm-story-slot';
+    btn.className = 'igfm-btn igfm-story-btn';
+    slot.appendChild(btn);
+    likeWrapper.after(slot);
+  } else {
+    btn.className = 'igfm-btn igfm-story-btn igfm-story-overlay';
+    card.classList.add('igfm-story-anchor');
+    card.appendChild(btn);
+  }
+}
+
+function storyProgress(card, cardRect) {
+  let best = null;
+  for (const row of card.querySelectorAll('*')) {
+    const children = [...row.children];
+    if (children.length < 2 || children.length > 100 ||
+      !children.every((child) => child.tagName === children[0].tagName)) continue;
+    const rects = children.map((child) => visibleRect(child));
+    if (!rects.every((r) => r && r.width >= 5 && r.height > 0 && r.height <= 4)) continue;
+    if (rects[0].top < cardRect.top - 2 || rects[0].top > cardRect.top + cardRect.height * 0.2) continue;
+    if (!rects.every((r, i) => Math.abs(r.top - rects[0].top) <= 5 &&
+      (!i || r.left >= rects[i - 1].right - 3))) continue;
+    const filled = children.flatMap((child, i) => child.firstElementChild ? [i] : []);
+    if (filled.length !== 1) continue;
+    const score = children.length * 10 + rects.reduce((sum, r) => sum + r.width, 0) / 100;
+    if (!best || score > best.score) best = { count: children.length, index: filled[0], score };
+  }
+  return best ? { count: best.count, index: best.index } : null;
+}
+
+function imageBasename(url) {
+  if (!url || !/^https?:/i.test(url)) return null;
+  try { return new URL(url).pathname.split('/').pop() || null; } catch { return null; }
+}
+
+function storySignals(active) {
+  const images = [...active.card.querySelectorAll('img')].map((img) => ({ img, rect: visibleRect(img) }))
+    .filter(({ rect: r }) => r && r.width >= 100 && r.height >= 150);
+  images.sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
+  const image = images[0] && images[0].img;
+  return { imageBasename: image ? imageBasename(image.currentSrc || image.src) : null,
+    progress: storyProgress(active.card, active.rect) };
+}
+
+function overlapArea(a, b) {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+    Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+}
+
+function carouselViewport(list, container) {
+  let node = list.parentElement;
+  while (node && node !== container) {
+    try {
+      const style = getComputedStyle(node);
+      if (/hidden|clip|scroll/.test(style.overflowX) || /hidden|clip|scroll/.test(style.overflowY))
+        return visibleRect(node);
+    } catch { return null; }
+    node = node.parentElement;
+  }
+  return visibleRect(list.parentElement) || visibleRect(container);
+}
+
+function carouselTranslateIndex(li, width) {
+  const transform = li && li.style && li.style.transform || '';
+  const match = transform.match(/translateX\(\s*([-\d.]+)px\s*\)/) ||
+    transform.match(/translate3d\(\s*([-\d.]+)px\s*,/);
+  if (!match || !width) return null;
+  const index = Math.round(Number(match[1]) / width);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function carouselSignals(container) {
+  const media = [...container.querySelectorAll('img, video')].map((el) => ({ el, rect: visibleRect(el) }))
+    .filter(({ rect: r }) => r && r.width >= 120 && r.height >= 120);
+  media.sort((a, b) => {
+    const distance = (r) => Math.hypot(
+      (r.left + r.width / 2 - innerWidth / 2) / innerWidth,
+      (r.top + r.height / 2 - innerHeight / 2) / innerHeight,
+    );
+    return distance(a.rect) - distance(b.rect);
+  });
+  const centre = media[0];
+  if (!centre) return { imageBasename: null, translateIndex: null };
+  const centreBasename = centre.el.tagName === 'VIDEO' ? imageBasename(centre.el.poster) :
+    imageBasename(centre.el.currentSrc || centre.el.src);
+  const lists = [...container.querySelectorAll('ul')].map((list) => {
+    const viewport = carouselViewport(list, container);
+    if (!viewport) return null;
+    const slides = [...list.children].filter((li) => li.tagName === 'LI' &&
+      li.querySelector('img, video') && li.getBoundingClientRect().width >= viewport.width / 2);
+    if (slides.length < 2) return null;
+    const score = overlapArea(viewport, centre.rect) + (list.contains(centre.el) ? 1000000 : 0);
+    if (score <= 0) return null;
+    return { list, viewport, slides, score };
+  }).filter(Boolean).sort((a, b) => b.score - a.score);
+  const chosen = lists[0];
+  if (!chosen) return { imageBasename: centreBasename, translateIndex: null };
+  const visibleSlide = chosen.slides.map((li) => ({ li, rect: visibleRect(li) }))
+    .sort((a, b) => overlapArea(b.rect, chosen.viewport) - overlapArea(a.rect, chosen.viewport))[0];
+  if (!visibleSlide || !overlapArea(visibleSlide.rect, chosen.viewport))
+    return { imageBasename: centreBasename, translateIndex: null };
+  const video = visibleSlide.li.querySelector('video');
+  const images = [...visibleSlide.li.querySelectorAll('img')].map((img) => ({ img, rect: visibleRect(img) }))
+    .filter(({ rect }) => rect).sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
+  const src = video && video.poster || images[0] && (images[0].img.currentSrc || images[0].img.src);
+  return { imageBasename: imageBasename(src) || centreBasename,
+    translateIndex: carouselTranslateIndex(visibleSlide.li, visibleSlide.rect.width) };
+}
+
 function scan() {
-  for (const c of postContainers()) inject(c);
+  const route = R.storyRouteFromPath(location.pathname);
+  if (route) {
+    try { injectStoryButton(activeStoryCard()); }
+    catch (e) { console.warn('[IGFM] story button injection failed:', e); }
+  }
+  else {
+    removeStoryButtons();
+    for (const c of postContainers()) inject(c);
+  }
   try {
     injectProfileButton(); // v2: adds/removes the fixed profile-capture control on SPA nav
   } catch (e) {
@@ -238,7 +463,90 @@ function fetchMediaFromReact(container, shortcode) {
   });
 }
 
-async function runDownload(btn) {
+function fetchStoryReelFromPage(route) {
+  return new Promise((resolve) => {
+    const reqId = 'igfms' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    let done = false;
+    const finish = (reel) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('igfm-response-story', onResponse);
+      clearTimeout(timer);
+      resolve(reel);
+    };
+    const onResponse = (e) => {
+      let detail = e && e.detail;
+      if (typeof detail === 'string') {
+        try { detail = JSON.parse(detail); } catch { detail = null; }
+      }
+      if (!detail || detail.reqId !== reqId) return;
+      if (detail.error) console.warn('[IGFM] story lookup error:', detail.error);
+      finish(detail.reel || null);
+    };
+    document.addEventListener('igfm-response-story', onResponse);
+    const timer = setTimeout(() => finish(null), 1600);
+    document.dispatchEvent(new CustomEvent('igfm-request-story', {
+      detail: JSON.stringify({ reqId, route }),
+    }));
+  });
+}
+
+async function runStoryDownload(btn, all) {
+  if (btn.dataset.busy) return;
+  const route = R.storyRouteFromPath(location.pathname);
+  let active = null;
+  try { active = activeStoryCard(); } catch (e) { console.warn('[IGFM] story card lookup failed:', e); }
+  if (!route || !active || !active.card.contains(btn)) {
+    toast('Story viewer not ready', 'err');
+    return;
+  }
+  let signals = { imageBasename: null, progress: null };
+  try { signals = storySignals(active); } catch (e) { console.warn('[IGFM] story signal lookup failed:', e); }
+  btn.dataset.busy = '1';
+  btn.classList.add('igfm-loading');
+  toast('Resolving story media…');
+  try {
+    const reel = await fetchStoryReelFromPage(route);
+    if (!reel || !Array.isArray(reel.items) || reel.kind !== route.kind ||
+      (route.kind === 'story' && String(reel.owner || '').toLowerCase() !== route.username.toLowerCase()) ||
+      (route.kind === 'highlight' && reel.id !== 'highlight:' + route.highlightId)) {
+      toast('Story data not captured yet — reload the tab', 'err');
+      return;
+    }
+    const items = reel.items.map((raw) => {
+      const item = R.normalizeStoryItem(raw);
+      return item && item.username && item.username.toLowerCase() === String(reel.owner).toLowerCase()
+        ? item : null;
+    });
+    let chosen;
+    if (all) chosen = items.filter(Boolean);
+    else {
+      const index = R.pickStoryItem(route, reel, items, signals);
+      if (index === null) {
+        toast("Couldn't tell which item is on screen — Shift-click saves the whole story", 'err');
+        return;
+      }
+      chosen = [items[index]];
+    }
+    const plan = R.planStoryDownloads(chosen, route.kind);
+    if (!plan.length) throw new Error('no downloadable story media in this reel');
+    const res = await sendPlan(plan);
+    btn.classList.add('igfm-done');
+    const failed = res.failed ? ` (${res.failed} failed)` : '';
+    toast(all ? `Saved ${res.saved} of ${reel.items.length}${failed}` : `Saved ${res.saved} story${failed}`, 'ok');
+    setTimeout(() => btn.classList.remove('igfm-done'), 2500);
+  } catch (e) {
+    console.error('[IGFM] story download error:', e);
+    btn.classList.add('igfm-error');
+    toast('Story capture failed: ' + ((e && e.message) || e), 'err');
+    setTimeout(() => btn.classList.remove('igfm-error'), 4500);
+  } finally {
+    delete btn.dataset.busy;
+    btn.classList.remove('igfm-loading');
+  }
+}
+
+async function runDownload(btn, all) {
   if (btn.dataset.busy) return;
   // Resolve at CLICK time from the button's current container — on SPA navigation a permalink
   // <main> persists across posts, so anything captured at inject time can go stale.
@@ -289,14 +597,23 @@ async function runDownload(btn) {
       const total = media.expectedCount > media.items.length ? media.expectedCount : '?';
       notice = ` — ${media.items.length} of ${total} slides (Instagram withheld the rest)`;
     }
-    const items = R.planDownloads(media);
+    let index = null;
+    let carouselFallback = null;
+    if (media.items.length > 1 && !all) {
+      let signals = { imageBasename: null, translateIndex: null };
+      try { signals = carouselSignals(container); } catch (e) { console.warn('[IGFM] carousel signal lookup failed:', e); }
+      index = R.pickCarouselIndex(media.items, signals);
+      if (index === null) carouselFallback = `Couldn't tell which slide is on screen — saved all ${media.items.length}`;
+    }
+    const items = R.planDownloads(media, index === null ? undefined : { index });
     console.log(`[IGFM] media resolved via ${media.source}:`, items);
     const res = await chrome.runtime.sendMessage({ type: 'igfm-download', items });
     console.log('[IGFM] background response:', res);
     if (!res || !res.ok) throw new Error((res && res.error) || 'no response from background (service worker alive?)');
     const skipped = res.failed ? ` (${res.failed} failed)` : '';
     btn.classList.add('igfm-done');
-    toast(`Saved ${res.saved} file${res.saved === 1 ? '' : 's'} → Downloads/${R.CAPTURE_FOLDER}/${skipped}${notice}`, 'ok');
+    toast(carouselFallback ? `${carouselFallback}${skipped}${notice}` :
+      `Saved ${res.saved} file${res.saved === 1 ? '' : 's'} → Downloads/${R.CAPTURE_FOLDER}/${skipped}${notice}`, 'ok');
     setTimeout(() => btn.classList.remove('igfm-done'), 2500);
   } catch (e) {
     console.error('[IGFM] capture error:', e);
@@ -515,7 +832,8 @@ document.addEventListener(
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();
-    runDownload(btn);
+    if (btn.classList.contains('igfm-story-btn')) runStoryDownload(btn, e.shiftKey);
+    else runDownload(btn, e.shiftKey);
   },
   true,
 );

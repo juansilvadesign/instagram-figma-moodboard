@@ -93,6 +93,39 @@
   color: #fff;
 }
 
+/* R9 story viewer: copy the Like wrapper's class for the bottom bar's spacing rhythm. */
+.igfm-story-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.igfm-btn.igfm-story-btn {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  padding: 8px;
+  color: #fff;
+  background: transparent;
+}
+
+.igfm-story-anchor {
+  position: relative;
+}
+
+.igfm-btn.igfm-story-overlay {
+  position: absolute;
+  bottom: 152px;
+  right: 12px;
+  z-index: 99;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.igfm-btn.igfm-story-btn.igfm-done { color: #00a35c; }
+.igfm-btn.igfm-story-btn.igfm-error { color: #ed4956; }
+
 /* Reel viewer vertical rail item. The wrap also carries a copied sibling class for the rail's
    spacing rhythm; these rules (2-class specificity) center it and render the icon white over the
    video. State colors on .igfm-btn (done/error) still win since they sit directly on the button. */

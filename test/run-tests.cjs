@@ -120,7 +120,8 @@ t('api/v1 image: picks the largest candidate', () => {
   assert.equal(m.username, 'Studio.XYZ');
   assert.equal(m.shortcode, 'C9XyZ12abcd');
   assert.equal(m.items.length, 1);
-  assert.deepEqual(m.items[0], { type: 'image', url: 'https://cdn.example/img-big.jpg?sig=1', width: 1440 });
+  assert.deepEqual(m.items[0], { type: 'image', url: 'https://cdn.example/img-big.jpg?sig=1',
+    width: 1440, names: ['img-small.jpg', 'img-big.jpg'] });
 });
 
 const API_V1_VIDEO = {
@@ -140,7 +141,7 @@ t('api/v1 video: prefers video_versions over the poster, largest first — and k
   // being discarded, so the profile crawl can place a still without ffmpeg.
   assert.deepEqual(m.items, [{
     type: 'video', url: 'https://cdn.example/vid-1080.mp4?sig=2', width: 1080,
-    poster: 'https://cdn.example/poster.jpg',
+    poster: 'https://cdn.example/poster.jpg', names: ['poster.jpg'],
   }]);
 });
 
@@ -186,7 +187,8 @@ const GQL_VIDEO = {
 t('graphql image: largest display resource', () => {
   const m = R.normalizeShortcodeMedia(GQL_IMAGE);
   assert.equal(m.username, 'studio.xyz');
-  assert.deepEqual(m.items, [{ type: 'image', url: 'https://cdn.example/gql-1080.jpg', width: 1080 }]);
+  assert.deepEqual(m.items, [{ type: 'image', url: 'https://cdn.example/gql-1080.jpg', width: 1080,
+    names: ['gql-640.jpg', 'gql-1080.jpg', 'display.jpg'] }]);
 });
 
 t('graphql video: video_url wins over poster resources — and keeps the poster', () => {
@@ -194,6 +196,7 @@ t('graphql video: video_url wins over poster resources — and keeps the poster'
   assert.deepEqual(m.items, [{
     type: 'video', url: 'https://cdn.example/gql-vid.mp4', width: 720,
     poster: 'https://cdn.example/gql-poster.jpg', // from display_resources, not image_versions2
+    names: ['gql-poster.jpg'],
   }]);
 });
 
@@ -308,6 +311,122 @@ t('unsafe username characters sanitized, empty falls back to instagram/post', ()
     items: [{ type: 'image', url: 'https://cdn.example/a.jpg', width: 1 }],
   });
   assert.equal(anon[0].filename, 'instagram-captures/instagram-C9XyZ12abcd.jpg');
+});
+
+// ---- R9 story and carousel selection ---------------------------------------
+
+t('storyRouteFromPath accepts user and highlight routes, rejects reserved and non-story paths', () => {
+  assert.deepEqual(R.storyRouteFromPath('/stories/Studio.One/12345/'),
+    { kind: 'story', username: 'Studio.One', pk: '12345' });
+  assert.deepEqual(R.storyRouteFromPath('/stories/studio.one/'),
+    { kind: 'story', username: 'studio.one', pk: null });
+  assert.deepEqual(R.storyRouteFromPath('/stories/highlights/98765/'),
+    { kind: 'highlight', highlightId: '98765' });
+  for (const path of ['/stories/p/123/', '/stories/about/', '/stories/bad-name/1/',
+    '/stories/highlights/nope/', '/p/Code123/', '/stories/studio/abc/'])
+    assert.equal(R.storyRouteFromPath(path), null, path);
+});
+
+t('normalizeStoryItem prefers null-width video type 101 over poster and picks widest image', () => {
+  const video = R.normalizeStoryItem({ pk: '123', taken_at: 1790551800, user: { username: 'studio' },
+    media_type: 2, has_audio: true,
+    video_versions: [103, 101, 102].map((type) => ({ type, width: null, height: null,
+      url: `https://cdn.example/video-${type}.mp4?sig=x` })),
+    image_versions2: { candidates: [{ width: 640, url: 'https://cdn.example/poster.jpg?sig=x' }] } });
+  assert.equal(video.type, 'video');
+  assert.equal(video.url, 'https://cdn.example/video-101.mp4?sig=x');
+  assert.equal(video.width, null);
+  assert.equal(video.hasAudio, true);
+  assert.deepEqual(video.names, ['poster.jpg']);
+  const sized = R.normalizeStoryItem({ pk: '126', video_versions: [
+    { type: 101, width: 480, url: 'https://cdn.example/480.mp4' },
+    { type: 103, width: 1080, url: 'https://cdn.example/1080.mp4' },
+  ] });
+  assert.equal(sized.url, 'https://cdn.example/1080.mp4'); // width outranks type
+  const partlyTyped = R.normalizeStoryItem({ pk: '127', video_versions: [
+    { width: null, url: 'https://cdn.example/unknown.mp4' },
+    { type: 102, width: null, url: 'https://cdn.example/102.mp4' },
+  ] });
+  assert.equal(partlyTyped.url, 'https://cdn.example/102.mp4');
+  const image = R.normalizeStoryItem({ pk: '124', user: { username: 'studio' },
+    image_versions2: { candidates: [
+      { width: 320, height: 568, url: 'https://cdn.example/small.webp?x=1' },
+      { width: 1179, height: 2096, url: 'https://cdn.example/big.webp?x=1' },
+    ] } });
+  assert.equal(image.url, 'https://cdn.example/big.webp?x=1');
+  assert.deepEqual(image.names, ['small.webp', 'big.webp']);
+  assert.equal(R.normalizeStoryItem({ pk: '125', video_versions: [] }), null);
+  assert.equal(R.normalizeStoryItem({ pk: '128', media_type: 2,
+    image_versions2: { candidates: [{ width: 640, url: 'https://cdn.example/poster.jpg' }] } }), null);
+});
+
+t('storyDate uses browser-local day across Sao Paulo midnight', () => {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = 'America/Sao_Paulo';
+    const instant = new Date('2026-09-28T02:30:00Z');
+    assert.equal(instant.getHours(), 23, 'TZ override must take effect');
+    assert.equal(R.storyDate(instant.getTime() / 1000), '2026-09-27');
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
+t('planStoryDownloads names story and highlight files from owner, local date and pk', () => {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = 'America/Sao_Paulo';
+    const takenAt = Date.parse('2026-09-28T02:30:00Z') / 1000;
+    const base = { pk: '123', username: 'Studio.One', takenAt, type: 'image',
+      url: 'https://cdn.example/photo.webp?sig=x' };
+    assert.deepEqual(R.planStoryDownloads([base], 'story'), [{
+      url: base.url, filename: 'instagram-captures/studio.one-story-2026-09-27-123.webp',
+      conflictAction: 'overwrite',
+    }]);
+    const video = { ...base, pk: '124', type: 'video', url: 'https://cdn.example/video.mp4?sig=x' };
+    assert.equal(R.planStoryDownloads([video], 'highlight')[0].filename,
+      'instagram-captures/studio.one-highlight-2026-09-27-124.mp4');
+    assert.equal(R.planStoryDownloads([{ ...base, pk: '125', url: 'https://cdn.example/photo.jpg' }], 'story')[0].filename,
+      'instagram-captures/studio.one-story-2026-09-27-125.jpg');
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
+t('pickStoryItem uses route pk, then image basename, then count-checked progress', () => {
+  const items = [{ pk: '11', names: ['one.jpg'] }, { pk: '22', names: ['two.jpg'] }];
+  const reel = { id: 'owner', items };
+  assert.equal(R.pickStoryItem({ kind: 'story', pk: '22' }, reel, items,
+    { imageBasename: 'one.jpg', progress: { count: 2, index: 0 } }), 1);
+  assert.equal(R.pickStoryItem({ kind: 'highlight' }, reel, items, { imageBasename: 'two.jpg' }), 1);
+  assert.equal(R.pickStoryItem({ kind: 'highlight' }, reel, items, { progress: { count: 2, index: 0 } }), 0);
+  assert.equal(R.pickStoryItem({ kind: 'highlight' }, reel, items, { progress: { count: 3, index: 0 } }), null);
+  assert.equal(R.pickStoryItem({ kind: 'highlight' }, reel, items, {}), null);
+});
+
+t('planDownloads keeps the original slide number for an indexed capture and all without opts', () => {
+  const media = { username: 'studio', shortcode: 'Carousel123', items: [1, 2, 3].map((n) => ({
+    type: 'image', url: `https://cdn.example/${n}.jpg`, width: 640,
+  })) };
+  const all = R.planDownloads(media);
+  assert.deepEqual(all.map((p) => p.filename), [1, 2, 3].map((n) =>
+    `instagram-captures/studio-Carousel123-0${n}.jpg`));
+  assert.deepEqual(R.planDownloads(media, { index: 2 }), [all[2]]);
+});
+
+t('pickCarouselIndex matches image candidates before translate and rejects unknown slides', () => {
+  const items = [
+    { url: 'https://cdn.example/one.jpg', names: ['one-small.jpg', 'one.jpg'] },
+    { url: 'https://cdn.example/two.jpg' },
+    { url: 'https://cdn.example/three.mp4', names: ['three-poster.jpg'] },
+  ];
+  assert.equal(R.pickCarouselIndex(items, { imageBasename: 'three-poster.jpg', translateIndex: 0 }), 2);
+  assert.equal(R.pickCarouselIndex(items, { imageBasename: 'two.jpg' }), 1);
+  assert.equal(R.pickCarouselIndex(items, { translateIndex: 2 }), 2);
+  assert.equal(R.pickCarouselIndex(items, { translateIndex: 3 }), null);
+  assert.equal(R.pickCarouselIndex(items, {}), null);
 });
 
 // ---- fiber extraction engine (extension/inject.js) -------------------------
@@ -1294,6 +1413,118 @@ t('buildManifest surfaces profile.highlights as {title, file}; [] when absent', 
     { title: 'Why CUSTOM?', file: '_highlight_01.jpg' }, { title: null, file: '_highlight_02.jpg' },
   ]);
   assert.deepEqual(P.buildManifest({ files: ['u-DYw5KdMDH6a.jpg'], handle: 'u', date: '2026-07-18' }).highlights, []);
+});
+
+// ---- R9 story reel tap ------------------------------------------------------
+
+const storyItem = (pk, owner) => ({
+  pk: String(pk), id: `${pk}_900`, code: 'StoryCode11', taken_at: 1790551800,
+  expiring_at: 1790638200, media_type: 1, product_type: 'story', audience: null,
+  user: { username: owner },
+  image_versions2: { candidates: [{ width: 1179, height: 2096,
+    url: `https://cdn.example/story-${pk}.jpg?sig=x` }] },
+});
+const storyReel = (id, owner, items, kind = 'user_reel') => ({
+  id, __typename: 'XDTReelDict', reel_type: kind, title: kind === 'highlight_reel' ? 'Saved' : null,
+  user: { username: owner, pk: '900' }, items,
+});
+
+t('collectStoryReels preserves connection order and keeps user/highlight owners', () => {
+  const payload = { data: { xdt_api__v1__feed__reels_media__connection: { edges: [
+    { node: storyReel('900', 'user.alpha', [
+      { ...storyItem('11', 'user.alpha'), audience: 'besties' }, storyItem('12', 'user.alpha'),
+    ]) },
+    { node: storyReel('highlight:77', 'user.beta', [storyItem('21', 'user.beta')], 'highlight_reel') },
+  ] } } };
+  const out = [];
+  assert.equal(I.collectStoryReels(payload, (reel) => out.push(I.sanitizeStoryReel(reel)), { ms: 300 }), true);
+  assert.deepEqual(out.map((r) => r.owner), ['user.alpha', 'user.beta']);
+  assert.deepEqual(out[0].items.map((item) => item.pk), ['11', '12']);
+  assert.equal(out[0].items[0].audience, 'besties'); // Close Friends stays eligible
+  assert.equal(out[1].kind, 'highlight');
+  assert.deepEqual(Object.keys(out[0].items[0]).sort(), [
+    'audience', 'code', 'expiring_at', 'has_audio', 'id', 'image_versions2', 'media_type',
+    'pk', 'product_type', 'taken_at', 'user', 'video_duration', 'video_versions',
+  ].sort());
+});
+
+t('collectStoryReels ignores item-less tray reels and web_info items-post look-alikes', () => {
+  const post = { pk: '50', product_type: 'carousel_container', expiring_at: null,
+    image_versions2: { candidates: [{ width: 100, url: 'https://cdn.example/post.jpg' }] } };
+  const payload = { data: { tray: [storyReel('901', 'user.alpha', [])],
+    xdt_api__v1__media__shortcode__web_info: { items: [post] } } };
+  const out = [];
+  I.collectStoryReels(payload, (reel) => out.push(reel), { ms: 300 });
+  assert.equal(out.length, 0);
+});
+
+t('storyReelFor selects the exact watched owner or highlight, never a prefetched neighbour', () => {
+  I._storyReelCache.clear();
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]));
+  I.storyReelPut(storyReel('902', 'user.beta', [storyItem('21', 'user.beta')]));
+  I.storyReelPut(storyReel('highlight:77', 'user.alpha', [storyItem('31', 'user.alpha')], 'highlight_reel'));
+  assert.deepEqual(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.map((i) => i.pk), ['11']);
+  assert.deepEqual(I.storyReelFor({ kind: 'highlight', highlightId: '77' }).items.map((i) => i.pk), ['31']);
+  assert.equal(I.storyReelFor({ kind: 'story', username: 'stranger' }), null);
+});
+
+t('storyReelPut drops items whose own owner differs from the reel owner', () => {
+  I._storyReelCache.clear();
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha'), storyItem('21', 'user.beta')]));
+  assert.deepEqual(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.map((i) => i.pk), ['11']);
+});
+
+t('storyReelPut matches a username-less item by owner id, and drops an id mismatch', () => {
+  I._storyReelCache.clear();
+  I.storyReelPut(storyReel('900', 'user.alpha', [
+    { ...storyItem('13', 'user.alpha'), user: { pk: '900' } },        // owner pk, no username
+    { ...storyItem('14', 'user.alpha'), user: undefined },           // only the `<pk>_900` id suffix
+    { ...storyItem('15', 'user.alpha'), user: {}, id: '15_555' },    // suffix names another owner
+    { ...storyItem('16', 'user.alpha'), user: { id: '555' } },       // user id names another owner
+  ]));
+  const reel = I.storyReelFor({ kind: 'story', username: 'user.alpha' });
+  assert.deepEqual(reel.items.map((i) => i.pk), ['13', '14']);
+  assert.deepEqual(reel.items.map((i) => i.user.username), ['user.alpha', 'user.alpha']);
+});
+
+t('storyReelPut keeps the larger pagination item list', () => {
+  I._storyReelCache.clear();
+  const route = { kind: 'story', username: 'user.alpha' };
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]));
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha'), storyItem('12', 'user.alpha')]));
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]));
+  assert.deepEqual(I.storyReelFor(route).items.map((i) => i.pk), ['11', '12']);
+});
+
+t('ingestResponseText reads two newline @defer chunks into the story cache', () => {
+  I._storyReelCache.clear();
+  const first = { data: { xdt_api__v1__feed__reels_media__connection: { edges: [
+    { node: storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]) },
+  ] } } };
+  const second = { data: { xdt_api__v1__feed__reels_media__connection: { edges: [
+    { node: storyReel('highlight:77', 'user.beta', [storyItem('21', 'user.beta')], 'highlight_reel') },
+  ] } } };
+  I.ingestResponseText(JSON.stringify(first) + '\n' + JSON.stringify(second));
+  assert.equal(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.length, 1);
+  assert.equal(I.storyReelFor({ kind: 'highlight', highlightId: '77' }).items.length, 1);
+});
+
+t('scanInlineScripts uses the shared story collector on embedded JSON', () => {
+  I._storyReelCache.clear();
+  const previous = global.document;
+  const ssrReel = storyReel('903', 'user.gamma', [storyItem('31', 'user.gamma')]);
+  delete ssrReel.__typename; // SSR can carry reel_type without XDTReelDict
+  const script = { textContent: JSON.stringify({ data: { xdt_api__v1__feed__reels_media__connection: {
+    edges: [{ node: ssrReel }],
+  } } }) };
+  try {
+    global.document = { querySelectorAll: () => [script] };
+    assert.equal(I.scanInlineScripts(), 1);
+    assert.equal(I.storyReelFor({ kind: 'story', username: 'user.gamma' }).items[0].pk, '31');
+  } finally {
+    if (previous === undefined) delete global.document;
+    else global.document = previous;
+  }
 });
 
 // ---- summary ---------------------------------------------------------------

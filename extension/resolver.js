@@ -23,6 +23,10 @@ const IGFM_RESOLVER = (() => {
   const GRAPHQL_DOC_ID = '8845758582119845'; // PolarisPostActionLoadPostQuery — rots; fallback path only
   const CAPTURE_FOLDER = 'instagram-captures';
   const FETCH_TIMEOUT_MS = 20000;
+  const RESERVED_HANDLES = new Set([
+    'p', 'reel', 'reels', 'tv', 'explore', 'stories', 'direct', 'accounts',
+    'about', 'legal', 'developer', 'api', 'graphql', 'your_activity', 'highlights',
+  ]);
 
   // /reels/audio/<numericId>/ is an AUDIO-attribution link, NOT a post — its "audio" slug (5
   // chars, matches the code pattern) and numeric audio/collection ids must never be taken as a
@@ -73,6 +77,20 @@ const IGFM_RESOLVER = (() => {
   const largest = (arr, widthOf) =>
     arr && arr.length ? arr.reduce((a, b) => (widthOf(b) > widthOf(a) ? b : a)) : null;
 
+  function basenameFromUrl(url) {
+    if (typeof url !== 'string' || !url) return null;
+    try { return new URL(url).pathname.split('/').pop() || null; } catch { return null; }
+  }
+
+  function imageNames(m) {
+    const urls = [];
+    const candidates = m.image_versions2 && m.image_versions2.candidates;
+    if (Array.isArray(candidates)) for (const c of candidates) urls.push(c.url);
+    if (Array.isArray(m.display_resources)) for (const r of m.display_resources) urls.push(r.src);
+    urls.push(m.display_url, m.thumbnail_src);
+    return [...new Set(urls.map(basenameFromUrl).filter(Boolean))];
+  }
+
   // api/v1 shape (xdt_api__v1__media__shortcode__web_info.items[0]).
   // The poster frame that accompanies a video (image_versions2 / display_resources). Carried on
   // video items as `poster` so a caller that needs a PLACEABLE still — the v2 profile crawl saves
@@ -96,20 +114,21 @@ const IGFM_RESOLVER = (() => {
     const leaf = (m) => {
       if (m.video_versions && m.video_versions.length) {
         const v = largest(m.video_versions, (x) => x.width || 0);
-        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(m) };
+        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(m), names: imageNames(m) };
       }
       const candidates = m.image_versions2 && m.image_versions2.candidates;
       if (candidates && candidates.length) {
         const i = largest(candidates, (x) => x.width || 0);
-        return { type: 'image', url: i.url, width: i.width || 0 };
+        return { type: 'image', url: i.url, width: i.width || 0, names: imageNames(m) };
       }
       // fallback to graphql fields just in case they are mixed
       if (m.is_video && m.video_url) {
-        return { type: 'video', url: m.video_url, width: (m.dimensions && m.dimensions.width) || 0, poster: posterOf(m) };
+        return { type: 'video', url: m.video_url, width: (m.dimensions && m.dimensions.width) || 0,
+          poster: posterOf(m), names: imageNames(m) };
       }
       const r = largest(m.display_resources, (x) => x.config_width || 0);
       const url = (r && r.src) || m.display_url;
-      return url ? { type: 'image', url, width: (r && r.config_width) || 0 } : null;
+      return url ? { type: 'image', url, width: (r && r.config_width) || 0, names: imageNames(m) } : null;
     };
     const leaves = item.carousel_media && item.carousel_media.length
       ? item.carousel_media
@@ -148,20 +167,21 @@ const IGFM_RESOLVER = (() => {
       // support api/v1 style version keys if they are mixed into graphql nodes
       if (n.video_versions && n.video_versions.length) {
         const v = largest(n.video_versions, (x) => x.width || 0);
-        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(n) };
+        return { type: 'video', url: v.url, width: v.width || 0, poster: posterOf(n), names: imageNames(n) };
       }
       const candidates = n.image_versions2 && n.image_versions2.candidates;
       if (candidates && candidates.length) {
         const i = largest(candidates, (x) => x.width || 0);
-        return { type: 'image', url: i.url, width: i.width || 0 };
+        return { type: 'image', url: i.url, width: i.width || 0, names: imageNames(n) };
       }
       // standard graphql fields
       if (n.is_video && n.video_url) {
-        return { type: 'video', url: n.video_url, width: (n.dimensions && n.dimensions.width) || 0, poster: posterOf(n) };
+        return { type: 'video', url: n.video_url, width: (n.dimensions && n.dimensions.width) || 0,
+          poster: posterOf(n), names: imageNames(n) };
       }
       const r = largest(n.display_resources, (x) => x.config_width || 0);
       const url = (r && r.src) || n.display_url;
-      return url ? { type: 'image', url, width: (r && r.config_width) || 0 } : null;
+      return url ? { type: 'image', url, width: (r && r.config_width) || 0, names: imageNames(n) } : null;
     };
     const edges = media.edge_sidecar_to_children && media.edge_sidecar_to_children.edges;
     const nodes = edges && edges.length
@@ -206,13 +226,111 @@ const IGFM_RESOLVER = (() => {
     return known.includes(ext) ? ext : type === 'video' ? 'mp4' : 'jpg';
   }
 
+  function storyRouteFromPath(pathname) {
+    const segments = String(pathname || '').split('?')[0].split('/').filter(Boolean);
+    if (segments[0] !== 'stories' || segments.length < 2 || segments.length > 3) return null;
+    if (segments[1] === 'highlights') {
+      return segments.length === 3 && /^\d+$/.test(segments[2])
+        ? { kind: 'highlight', highlightId: segments[2] } : null;
+    }
+    const username = segments[1];
+    if (!/^[A-Za-z0-9._]+$/.test(username) || RESERVED_HANDLES.has(username.toLowerCase())) return null;
+    if (segments.length === 3 && !/^\d+$/.test(segments[2])) return null;
+    return { kind: 'story', username, pk: segments[2] || null };
+  }
+
+  function normalizeStoryItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const video = Array.isArray(raw.video_versions) ? raw.video_versions.filter((v) => v && /^https?:/i.test(v.url || '')) : [];
+    const candidates = raw.image_versions2 && Array.isArray(raw.image_versions2.candidates)
+      ? raw.image_versions2.candidates.filter((c) => c && /^https?:/i.test(c.url || '')) : [];
+    let chosen = null;
+    let type = 'image';
+    if (video.length) {
+      const withWidth = video.filter((v) => v.width != null && Number.isFinite(Number(v.width)));
+      const typeRank = (v) => v.type != null && Number.isFinite(Number(v.type)) ? Number(v.type) : Infinity;
+      chosen = withWidth.length ? largest(withWidth, (v) => Number(v.width)) :
+        video.reduce((best, v) => typeRank(v) < typeRank(best) ? v : best);
+      type = 'video';
+    } else if (Number(raw.media_type) === 2) {
+      return null; // a video poster is not the video file
+    } else if (candidates.length) {
+      chosen = largest(candidates, (c) => Number(c.width) || 0);
+    }
+    if (!chosen || !chosen.url) return null;
+    const pk = raw.pk != null ? String(raw.pk) : raw.id ? String(raw.id).split('_')[0] : null;
+    return { pk, username: (raw.user && raw.user.username) || (raw.owner && raw.owner.username) || null,
+      takenAt: raw.taken_at == null ? null : Number(raw.taken_at), type, url: chosen.url,
+      width: chosen.width == null ? null : Number(chosen.width),
+      height: chosen.height == null ? null : Number(chosen.height),
+      hasAudio: raw.has_audio == null ? null : !!raw.has_audio,
+      names: [...new Set(candidates.map((c) => basenameFromUrl(c.url)).filter(Boolean))] };
+  }
+
+  function storyDate(takenAtSeconds) {
+    const seconds = Number(takenAtSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime())) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function planStoryDownloads(items, kind) {
+    if (kind !== 'story' && kind !== 'highlight') return [];
+    return items.filter(Boolean).flatMap((item) => {
+      const user = safeSegment(item.username).toLowerCase();
+      const pk = String(item.pk || '');
+      const date = storyDate(item.takenAt);
+      if (!user || !/^\d+$/.test(pk) || !date || !/^https?:/i.test(item.url || '')) return [];
+      return [{ url: item.url,
+        filename: `${CAPTURE_FOLDER}/${user}-${kind}-${date}-${pk}.${extFromUrl(item.url, item.type)}`,
+        conflictAction: 'overwrite' }];
+    });
+  }
+
+  function pickStoryItem(route, reel, items, signals) {
+    if (!route || !reel || !Array.isArray(items)) return null;
+    const s = signals || {};
+    if (route.kind === 'story' && route.pk) {
+      const found = items.findIndex((item) => item && String(item.pk) === String(route.pk));
+      return found < 0 ? null : found;
+    }
+    if (s.imageBasename) {
+      const matches = items.flatMap((item, i) => item && item.names && item.names.includes(s.imageBasename) ? [i] : []);
+      if (matches.length === 1) return matches[0];
+    }
+    const p = s.progress;
+    return p && p.count === items.length && Number.isInteger(p.index) && p.index >= 0 &&
+      p.index < items.length && items[p.index] ? p.index : null;
+  }
+
+  function pickCarouselIndex(items, signals) {
+    if (!Array.isArray(items)) return null;
+    const s = signals || {};
+    if (s.imageBasename) {
+      const matches = items.flatMap((item, i) => {
+        if (!item) return [];
+        const names = item.names && item.names.length ? item.names : [basenameFromUrl(item.url)];
+        return names.includes(s.imageBasename) ? [i] : [];
+      });
+      if (matches.length === 1) return matches[0];
+    }
+    return Number.isInteger(s.translateIndex) && s.translateIndex >= 0 && s.translateIndex < items.length
+      ? s.translateIndex : null;
+  }
+
   // Normalized media → chrome.downloads plan. Usernames are case-insensitive on IG (lowercase
   // them); shortcodes are case-SENSITIVE (preserve, so a file can be traced back to its post URL).
-  function planDownloads(media) {
+  function planDownloads(media, opts) {
     const user = safeSegment(media.username).toLowerCase() || 'instagram';
     const code = safeSegment(media.shortcode) || 'post';
     const many = media.items.length > 1;
-    return media.items.map((item, i) => ({
+    const index = opts && Number.isInteger(opts.index) && opts.index >= 0 && opts.index < media.items.length
+      ? opts.index : null;
+    const selected = index === null ? media.items.map((item, i) => ({ item, i })) :
+      [{ item: media.items[index], i: index }];
+    return selected.map(({ item, i }) => ({
       url: item.url,
       filename: `${CAPTURE_FOLDER}/${user}-${code}${many ? '-' + String(i + 1).padStart(2, '0') : ''}.${extFromUrl(item.url, item.type)}`,
     }));
@@ -460,6 +578,12 @@ const IGFM_RESOLVER = (() => {
     deepFind,
     normalizeApiV1Item,
     normalizeShortcodeMedia,
+    storyRouteFromPath,
+    normalizeStoryItem,
+    storyDate,
+    planStoryDownloads,
+    pickStoryItem,
+    pickCarouselIndex,
     pickMediaFromHtml,
     isPartialCarousel,
     needsCompletion,
