@@ -16,9 +16,9 @@ fixed "Capture profile" button crawls the grid into `Downloads/instagram-capture
 (24 covers + `_avatar.jpg` + `capture.json`), and the agent places that folder into a dated Figma
 Section — proven on a real profile (`@solarity.studio`: 24/24 posts, 0 skipped, pinned post at
 slot 0, zero ffmpeg). Recipe: [`placement/PLACEMENT.md`](placement/PLACEMENT.md).
-**R9 (v0.5.0, built 2026-09-27; Node-verified, Chrome pass PENDING):** a button in the story viewer's
-bottom bar (right after Like) saves the story or highlight item on screen; Shift-click saves that
-whole story or highlight, as `<user>-story|highlight-<YYYY-MM-DD>-<pk>.<ext>`.
+**R9 (v0.5.1, 2026-09-27; Chrome-verified except a highlight item and a story video's audio):** a
+button in the story viewer's Like/Share row (right after Like) saves the story or highlight item on
+screen; Shift-click saves that whole story or highlight, as `<user>-story|highlight-<YYYY-MM-DD>-<pk>.<ext>`.
 
 ## Decisions (2026-07-07 build)
 
@@ -313,7 +313,9 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     from the displayed `<img>` basename (images) or the **progress row**: N thin bars at the top of the
     card, **exactly one of which has an element child** — its index is the item, and N equalled the
     reel's item count on 5/5 marks. The viewer's `<video>` is `blob:` with no poster (gotcha #3), so a
-    highlight video is found only by the progress row.
+    highlight video is found only by the progress row. **A story opened but not yet loaded has no item
+    pk in its URL** (`/stories/<user>/`), so a plain click then says "couldn't tell" — accepted by the
+    owner 2026-09-27: click again once it plays.
 29. **Story `video_versions` have NULL `width`/`height`** (3 entries, types 101/102/103, on 18/18 probed
     videos), so "pick the widest" degenerates: pick the lowest `type`. `has_audio: false` on 4/18 was
     on short silent clips — ffprobe a saved file before calling a missing track a DASH problem (the

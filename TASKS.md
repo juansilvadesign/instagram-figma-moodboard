@@ -45,10 +45,10 @@ unbounded redesign. Re-plan after the live verification for each release.
 
 ## ▶ Next session — start here
 
-**▶ R9 is active (started 2026-09-27):** story and highlight download from the story viewer, plus
-the carousel click rule (a plain click saves the slide on screen, Shift-click every slide). The probe
-(`probes/stories-probe.js`) ran live and the build is in (v0.5.0, Node 134/134). **Next: the owner's
-Chrome pass** (README → Verify in Chrome, the R9 items). Decisions and state live in ROADMAP R9 and the
+**▶ R9 built (v0.5.1, 2026-09-27):** story and highlight download from the story viewer, plus the
+carousel click rule. Chrome-verified: the button in the Like/Share row, stories (plain + Shift), a
+carousel (plain + Shift). **Left to confirm:** a highlight item and a story video's audio track
+(README → Verify in Chrome). Known limitation: a click before the story loads can't identify the item. Decisions and state live in ROADMAP R9 and the
 [idea note](../../ideas/instagram-stories-highlights-download.md).
 
 **Apart from R9 there is no unfinished product feature. The other open work is truth maintenance,
