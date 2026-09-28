@@ -321,9 +321,13 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
 30. **The story viewer mounts neighbours.** Desktop shows the watched card (≈444×790, centred) plus up
     to 4 side previews of OTHER accounts, and can mount a neighbour card below it. Search only the
     active card (largest media nearest the centre) and bound the bottom-bar search by its bottom. The
-    button goes right after **Like** — the leftmost labelled svg in the card's bottom 20%, outside the
-    reply field: **Close Friends items have no Share button**, so "after Like" is between Like and
-    Share, or last. There is no `<section>`, so `findActionBar` never applies.
+    button is a child of the **Like/Share ROW**, right after the **Like item** (Like = the leftmost
+    labelled svg in the card's bottom 20%, outside the reply field). The row is the lowest common
+    ancestor of the Like and Share svgs; **Close Friends items have no Share button**, so there the row
+    is the Like-holding child of LCA(Like, reply field). ⛔ `svg.closest('[role="button"]')` sits
+    INSIDE the Like item — anchoring on it put the button inside Like's div (Chrome pass, 2026-09-27;
+    the live row was `div.x78zum5.xvc5jky`, evidence only: never a selector, #16). There is no
+    `<section>`, so `findActionBar` never applies.
 31. **The carousel slide on screen comes from the DOM; the file still comes from the data.** Each slide
     `li` carries `transform: translateX(i × width)` (virtualized; a 1 px spacer `li` exists), so
     `index = round(translateX / li width)`, and the visible `img` basename also matches
@@ -333,6 +337,17 @@ Normalized media → `planDownloads()` → SW saves each URL via `chrome.downloa
     whether it holds `username` is unverified; its id is `<pk>_<ownerId>`, and that suffix equalled the
     reel owner's pk on 26/26 items. `sanitizeStoryReel` accepts a username match, else an owner-id
     match, and drops any positive mismatch (#22: a wrong owner is worse than none).
+
+33. **A budgeted ingest walk starves on a busy main thread — make the cache complete at click time.**
+    Chrome pass 2026-09-27: ~1 in 10 plain clicks on a PLAYING story video said "couldn't tell" while
+    Shift saved the rest. Each response was walked once with a 120 ms deadline, and a generic DFS
+    through every item and sticker can run out before the watched reel is `put` when a video keeps
+    the main thread busy; pages of one reel also overwrote each other ("keep the larger copy"). Fixed
+    in v0.5.1: a direct fast path over `…reels_media__connection.edges` (no budget), merge-by-pk
+    (the richer copy wins; a superset keeps its order), and the last 8 story texts retained (≤ 6 M
+    chars, memory only) so a click can **re-walk them without the budget** when the watched pk is
+    missing or unusable. Failure toasts now name the cause, and `[IGFM] story pick failed` logs the
+    diag. **A deadline that protects the page must not be the only chance to see the data.**
 
 ## Validate / test
 
