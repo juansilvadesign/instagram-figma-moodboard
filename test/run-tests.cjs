@@ -1527,6 +1527,75 @@ t('scanInlineScripts uses the shared story collector on embedded JSON', () => {
   }
 });
 
+t('story connection fast path caches reels even with ms: 0', () => {
+  I._storyReelCache.clear();
+  const payload = { data: { xdt_api__v1__feed__reels_media__connection: { edges: [
+    { node: storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]) },
+  ] } } };
+  I.ingestPayloadText(JSON.stringify(payload), 0);
+  assert.deepEqual(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.map((i) => i.pk), ['11']);
+});
+
+t('story reel pages merge disjoint pk ranges in chronological order', () => {
+  I._storyReelCache.clear();
+  const page = (pks) => storyReel('901', 'user.alpha', pks.map((pk) => ({
+    ...storyItem(pk, 'user.alpha'), taken_at: 1790551800 + Number(pk),
+  })));
+  I.storyReelPut(page(['1', '2', '3']));
+  I.storyReelPut(page(['4', '5']));
+  assert.deepEqual(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.map((i) => i.pk),
+    ['1', '2', '3', '4', '5']);
+});
+
+t('story reel merge upgrades a thin video without changing item order', () => {
+  I._storyReelCache.clear();
+  const thin = { ...storyItem('11', 'user.alpha'), media_type: 2, video_versions: [] };
+  const rich = { ...thin, video_versions: [{ type: 101, width: 720, height: 1280,
+    url: 'https://cdn.example/story-11.mp4' }] };
+  I.storyReelPut(storyReel('901', 'user.alpha', [thin, storyItem('12', 'user.alpha')]));
+  I.storyReelPut(storyReel('901', 'user.alpha', [rich]));
+  const items = I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items;
+  assert.deepEqual(items.map((i) => i.pk), ['11', '12']);
+  assert.equal(items[0].video_versions[0].url, 'https://cdn.example/story-11.mp4');
+});
+
+t('story reel superset copy keeps its own pk order', () => {
+  I._storyReelCache.clear();
+  const item = (pk) => storyItem(pk, 'user.alpha');
+  I.storyReelPut(storyReel('901', 'user.alpha', [item('1'), item('2'), item('2')]));
+  I.storyReelPut(storyReel('901', 'user.alpha', [item('2'), item('1'), item('3')]));
+  assert.deepEqual(I.storyReelFor({ kind: 'story', username: 'user.alpha' }).items.map((i) => i.pk),
+    ['2', '1', '3']);
+});
+
+t('story lookup re-walks a starved generic payload for a missing pk', () => {
+  I._storyReelCache.clear();
+  I._retainedStoryTexts.splice(0);
+  I.storyReelPut(storyReel('901', 'user.alpha', [storyItem('10', 'user.alpha')]));
+  const reel = storyReel('901', 'user.alpha', [storyItem('11', 'user.alpha')]);
+  I.ingestPayloadText(JSON.stringify({ data: {
+    noise: Array.from({ length: 100 }, (_, index) => ({ index })), wrapper: { reel },
+  } }), 0);
+  const result = I.lookupStoryReel({ kind: 'story', username: 'user.alpha', pk: '11' });
+  assert.equal(result.diag.rewalked, true);
+  assert.equal(result.diag.pkInReel, true);
+  assert.equal(result.diag.pkUsable, true);
+  assert.deepEqual(result.reel.items.map((i) => i.pk), ['10', '11']);
+});
+
+t('retained story response texts stay within 8 entries and 6 M chars', () => {
+  I._retainedStoryTexts.splice(0);
+  for (let seq = 0; seq < 9; seq++) I.ingestPayloadText(JSON.stringify({ reel_type: 'user_reel', seq }), 0);
+  assert.equal(I._retainedStoryTexts.length, 8);
+  assert.equal(JSON.parse(I._retainedStoryTexts[0]).seq, 1);
+  const large = (chars) => JSON.stringify({ reel_type: 'user_reel', padding: 'x'.repeat(chars) });
+  I.ingestPayloadText(large(4_000_000), 0);
+  I.ingestPayloadText(large(3_000_000), 0);
+  assert.ok(I._retainedStoryTexts.length <= 8);
+  assert.ok(I._retainedStoryTexts.reduce((n, text) => n + text.length, 0) <= 6_000_000);
+  assert.equal(I._retainedStoryTexts.length, 1);
+});
+
 // ---- summary ---------------------------------------------------------------
 
 (async () => {

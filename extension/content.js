@@ -212,20 +212,55 @@ function removeStoryButton(btn) {
   if (card && !card.querySelector('.igfm-story-overlay')) card.classList.remove('igfm-story-anchor');
 }
 
+function lowestCommonAncestor(a, b, card) {
+  for (let node = a; node && card.contains(node); node = node.parentElement) {
+    if (node.contains(b)) return node;
+  }
+  return null;
+}
+
+function childContaining(parent, descendant) {
+  if (!parent || !parent.contains(descendant) || parent === descendant) return null;
+  let child = descendant;
+  while (child.parentElement !== parent) child = child.parentElement;
+  return child;
+}
+
 function storyBottomAnchor(active) {
   const { card, rect: cr } = active;
-  let chosen = null;
+  const icons = [];
   for (const svg of card.querySelectorAll('svg[aria-label]')) {
     const r = visibleRect(svg);
     if (!r || r.top < cr.top + cr.height * 0.8 || r.bottom > cr.bottom + 4) continue;
     if (svg.closest('textarea, form, [contenteditable]')) continue;
-    let wrapper = svg.closest('[role="button"], button, a');
-    if (!wrapper || wrapper === card || !card.contains(wrapper)) wrapper = svg.parentElement;
-    if (!wrapper || wrapper === card || !wrapper.parentElement ||
-      !card.contains(wrapper.parentElement)) continue;
-    if (!chosen || r.left < chosen.left) chosen = { wrapper, left: r.left };
+    icons.push({ svg, rect: r });
   }
-  return chosen && chosen.wrapper;
+  icons.sort((a, b) => a.rect.left - b.rect.left);
+  const like = icons[0];
+  if (!like) return null;
+
+  const share = icons.find(({ rect }) => rect.left > like.rect.left);
+  let row;
+  if (share) {
+    row = lowestCommonAncestor(like.svg, share.svg, card);
+    if (!row || row === card) return null;
+  } else {
+    const reply = [...card.querySelectorAll('textarea, form, [contenteditable]')]
+      .map((el) => ({ el, rect: visibleRect(el) }))
+      .filter(({ el, rect }) => rect && !el.contains(like.svg) &&
+        rect.top <= cr.bottom + 4 && rect.bottom >= cr.top + cr.height * 0.8)
+      .sort((a, b) => Number(a.el.matches('form')) - Number(b.el.matches('form')) ||
+        Math.abs(a.rect.bottom - like.rect.top) - Math.abs(b.rect.bottom - like.rect.top))[0];
+    if (!reply) return null;
+    const bar = lowestCommonAncestor(like.svg, reply.el, card);
+    row = childContaining(bar, like.svg);
+  }
+  if (!row || !card.contains(row)) return null;
+  let likeItem = childContaining(row, like.svg);
+  if (!likeItem) { likeItem = row; row = row.parentElement; }
+  if (!row || !card.contains(row) || likeItem.parentElement !== row) return null;
+  if (share && childContaining(row, share.svg) === likeItem) return null;
+  return { row, likeItem };
 }
 
 function injectStoryButton(active) {
@@ -234,19 +269,19 @@ function injectStoryButton(active) {
   const existing = [...document.querySelectorAll('.igfm-story-btn')];
   const current = existing.find((btn) => card.contains(btn));
   for (const btn of existing) if (btn !== current) removeStoryButton(btn);
-  const likeWrapper = storyBottomAnchor(active);
+  const placement = storyBottomAnchor(active);
   if (current) {
     const slot = current.parentElement && current.parentElement.classList.contains('igfm-story-slot')
       ? current.parentElement : null;
-    if (likeWrapper && slot) {
-      if (slot.parentElement !== likeWrapper.parentElement ||
-        slot.previousElementSibling !== likeWrapper) likeWrapper.after(slot);
-      const classes = (typeof likeWrapper.className === 'string' ? likeWrapper.className : '') +
+    if (placement && slot) {
+      const { row, likeItem } = placement;
+      if (slot.parentElement !== row || slot.previousElementSibling !== likeItem) likeItem.after(slot);
+      const classes = (typeof likeItem.className === 'string' ? likeItem.className : '') +
         ' igfm-story-slot';
       if (slot.className !== classes) slot.className = classes;
       return;
     }
-    if (!likeWrapper && current.classList.contains('igfm-story-overlay')) return;
+    if (!placement && current.classList.contains('igfm-story-overlay')) return;
     removeStoryButton(current);
   }
 
@@ -255,13 +290,13 @@ function injectStoryButton(active) {
   btn.title = 'Download story (Shift-click: all items in this story)';
   btn.setAttribute('aria-label', 'Download story');
   btn.innerHTML = dlSvg(24);
-  if (likeWrapper) {
+  if (placement) {
     const slot = document.createElement('div');
-    slot.className = (typeof likeWrapper.className === 'string' ? likeWrapper.className : '') +
+    slot.className = (typeof placement.likeItem.className === 'string' ? placement.likeItem.className : '') +
       ' igfm-story-slot';
     btn.className = 'igfm-btn igfm-story-btn';
     slot.appendChild(btn);
-    likeWrapper.after(slot);
+    placement.likeItem.after(slot);
   } else {
     btn.className = 'igfm-btn igfm-story-btn igfm-story-overlay';
     card.classList.add('igfm-story-anchor');
@@ -467,12 +502,12 @@ function fetchStoryReelFromPage(route) {
   return new Promise((resolve) => {
     const reqId = 'igfms' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     let done = false;
-    const finish = (reel) => {
+    const finish = (result) => {
       if (done) return;
       done = true;
       document.removeEventListener('igfm-response-story', onResponse);
       clearTimeout(timer);
-      resolve(reel);
+      resolve(result);
     };
     const onResponse = (e) => {
       let detail = e && e.detail;
@@ -481,10 +516,10 @@ function fetchStoryReelFromPage(route) {
       }
       if (!detail || detail.reqId !== reqId) return;
       if (detail.error) console.warn('[IGFM] story lookup error:', detail.error);
-      finish(detail.reel || null);
+      finish({ reel: detail.reel || null, diag: detail.diag || null });
     };
     document.addEventListener('igfm-response-story', onResponse);
-    const timer = setTimeout(() => finish(null), 1600);
+    const timer = setTimeout(() => finish({ reel: null, diag: null }), 1600);
     document.dispatchEvent(new CustomEvent('igfm-request-story', {
       detail: JSON.stringify({ reqId, route }),
     }));
@@ -505,12 +540,25 @@ async function runStoryDownload(btn, all) {
   btn.dataset.busy = '1';
   btn.classList.add('igfm-loading');
   toast('Resolving story media…');
+  const warnPickFailure = (reel, diag, items) => {
+    const normalizedNullPks = items && reel && Array.isArray(reel.items) ? reel.items.flatMap((raw, index) => {
+      if (items[index]) return [];
+      const pk = raw && (raw.pk != null ? raw.pk : raw.id && String(raw.id).split('_')[0]);
+      return pk == null ? [] : [String(pk)];
+    }) : [];
+    console.warn('[IGFM] story pick failed', { route, diag,
+      signals: { progressCount: signals.progress ? signals.progress.count : null,
+        progressIndex: signals.progress ? signals.progress.index : null,
+        imageBasename: signals.imageBasename }, normalizedNullPks });
+  };
   try {
-    const reel = await fetchStoryReelFromPage(route);
+    const { reel, diag } = await fetchStoryReelFromPage(route);
     if (!reel || !Array.isArray(reel.items) || reel.kind !== route.kind ||
       (route.kind === 'story' && String(reel.owner || '').toLowerCase() !== route.username.toLowerCase()) ||
       (route.kind === 'highlight' && reel.id !== 'highlight:' + route.highlightId)) {
-      toast('Story data not captured yet — reload the tab', 'err');
+      warnPickFailure(reel, diag, null);
+      toast(route.kind === 'story' && route.pk ? "This story item wasn't captured — reload the tab" :
+        'Story data not captured yet — reload the tab', 'err');
       return;
     }
     const items = reel.items.map((raw) => {
@@ -523,7 +571,16 @@ async function runStoryDownload(btn, all) {
     else {
       const index = R.pickStoryItem(route, reel, items, signals);
       if (index === null) {
-        toast("Couldn't tell which item is on screen — Shift-click saves the whole story", 'err');
+        warnPickFailure(reel, diag, items);
+        const pkInReel = route.pk && (diag && diag.pkInReel != null ? diag.pkInReel :
+          reel.items.some((raw) => String(raw.pk || String(raw.id || '').split('_')[0]) === route.pk));
+        toast(route.kind === 'highlight'
+          ? "Couldn't tell which item is on screen — Shift-click saves the whole highlight"
+          : route.pk
+            ? pkInReel
+              ? "This story's video isn't loaded yet — try again in a moment"
+              : "This story item wasn't captured — reload the tab"
+            : "Couldn't tell which item is on screen — Shift-click saves the whole story", 'err');
         return;
       }
       chosen = [items[index]];

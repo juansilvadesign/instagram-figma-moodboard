@@ -550,11 +550,23 @@
   }
 
   function collectStoryReels(root, put, budget) {
-    const deadline = now() + (budget && budget.ms !== undefined ? budget.ms : 120);
+    const connection = root && root.data && root.data.xdt_api__v1__feed__reels_media__connection;
+    if (connection && Array.isArray(connection.edges)) {
+      for (const edge of connection.edges) {
+        const reel = edge && edge.node;
+        if (looksLikeStoryReel(reel)) put(reel);
+      }
+      return true; // direct connection edges are ordered and need no budgeted deep walk
+    }
+    const deadline = budget && budget.deadline !== undefined ? budget.deadline :
+      now() + (budget && budget.ms !== undefined ? budget.ms : 120);
     let nodes = budget && budget.nodes !== undefined ? budget.nodes : 150000;
     const visited = new Set(), stack = [root];
     while (stack.length) {
-      if (--nodes <= 0 || now() > deadline) return false;
+      if (--nodes <= 0 || now() > deadline) {
+        if (budget) budget.nodes = nodes;
+        return false;
+      }
       const v = stack.pop();
       if (!v || typeof v !== 'object' || visited.has(v)) continue;
       visited.add(v);
@@ -563,7 +575,8 @@
         continue;
       }
       if (looksLikeStoryReel(v)) {
-        put(v); // let storyReelPut keep the larger copy if this payload repeats the reel
+        put(v);
+        continue; // items and stickers cannot contain another viewer reel
       }
       let names;
       try { names = Object.keys(v); } catch { continue; }
@@ -573,10 +586,59 @@
         if (child && typeof child === 'object') stack.push(child);
       }
     }
+    if (budget) budget.nodes = nodes;
     return true;
   }
 
   const storyReelCache = new Map();
+  const retainedStoryTexts = [];
+  const STORY_TEXT_COUNT_MAX = 8;
+  const STORY_TEXT_CHARS_MAX = 6_000_000;
+
+  function storyItemPk(item) {
+    return item.pk != null ? String(item.pk) : item.id != null ? String(item.id).split('_')[0] : null;
+  }
+
+  function storyItemRichness(item) {
+    const sources = Number(item.media_type) === 2 ? item.video_versions :
+      item.image_versions2 && item.image_versions2.candidates;
+    const usable = Array.isArray(sources) ? sources.filter((source) => source &&
+      /^https?:/i.test(source.url || '')).length : 0;
+    return usable * 1000 + Number(item.taken_at != null) + Number(item.has_audio != null) +
+      Number(item.video_duration != null);
+  }
+
+  function mergeStoryItems(previous, incoming) {
+    const byPk = new Map();
+    const firstSeen = [];
+    const keysFor = (items, label) => items.map((item, index) => {
+      const pk = storyItemPk(item);
+      const key = pk ? 'pk:' + pk : item.id ? 'id:' + item.id : label + index;
+      if (!byPk.has(key)) {
+        byPk.set(key, item);
+        firstSeen.push(key);
+      } else if (storyItemRichness(item) > storyItemRichness(byPk.get(key))) {
+        byPk.set(key, item);
+      }
+      return key;
+    }).filter((key, index, keys) => keys.indexOf(key) === index);
+    const previousKeys = keysFor(previous, 'previous:');
+    const incomingKeys = keysFor(incoming, 'incoming:');
+    const previousSet = new Set(previousKeys), incomingSet = new Set(incomingKeys);
+    const incomingSuperset = previousKeys.every((key) => incomingSet.has(key));
+    const previousSuperset = incomingKeys.every((key) => previousSet.has(key));
+    let order;
+    if (incomingSuperset && !previousSuperset) order = incomingKeys;
+    else if (previousSuperset) order = previousKeys;
+    else order = firstSeen.slice().sort((a, b) => {
+      const time = (key) => {
+        const value = Number(byPk.get(key).taken_at);
+        return Number.isFinite(value) && value > 0 ? value : Infinity;
+      };
+      return time(a) - time(b) || firstSeen.indexOf(a) - firstSeen.indexOf(b);
+    });
+    return order.map((key) => byPk.get(key));
+  }
 
   // An item belongs to the reel owner when its own username says so. The live probe proved every
   // story item carries a `user` key but not that it holds a username, so an item WITHOUT one is
@@ -630,13 +692,10 @@
     if (!clean) return;
     const key = clean.kind === 'highlight' ? clean.id : clean.owner.toLowerCase();
     const previous = storyReelCache.get(key);
-    const richness = (r) => r.items.reduce((n, item) => n +
-      item.video_versions.filter((v) => v.url).length +
-      item.image_versions2.candidates.filter((c) => c.url).length, 0);
-    if (previous && (previous.items.length > clean.items.length ||
-      (previous.items.length === clean.items.length && richness(previous) >= richness(clean)))) return;
+    const merged = previous ? { ...clean, title: clean.title || previous.title,
+      items: mergeStoryItems(previous.items, clean.items) } : clean;
     if (storyReelCache.size >= 200 && !previous) storyReelCache.delete(storyReelCache.keys().next().value);
-    storyReelCache.set(key, clean);
+    storyReelCache.set(key, merged);
   }
 
   function storyReelFor(route) {
@@ -648,13 +707,29 @@
     return null;
   }
 
-  function ingestPayloadText(text, ms) {
+  function isStoryText(text) {
+    return typeof text === 'string' && (text.indexOf('reels_media') >= 0 ||
+      text.indexOf('"reel_type"') >= 0 || text.indexOf('XDTReelDict') >= 0);
+  }
+
+  function retainStoryText(text) {
+    if (text.length > STORY_TEXT_CHARS_MAX) return;
+    retainedStoryTexts.push(text);
+    let chars = retainedStoryTexts.reduce((sum, entry) => sum + entry.length, 0);
+    while (retainedStoryTexts.length > STORY_TEXT_COUNT_MAX || chars > STORY_TEXT_CHARS_MAX) {
+      chars -= retainedStoryTexts.shift().length;
+    }
+  }
+
+  function ingestPayloadText(text, ms, retain = true) {
     const payloads = parseJsonChunks(text);
+    const storyText = isStoryText(text);
+    if (storyText && payloads.length && retain) retainStoryText(text);
     for (const payload of payloads) collectMedia(payload, cachePut, { ms }, profilePut);
     if (text.indexOf('XDTReelDict') >= 0 || text.indexOf('highlight:') >= 0) {
       for (const payload of payloads) collectHighlights(payload, highlightPut, { ms });
     }
-    if (text.indexOf('reels_media') >= 0 || text.indexOf('"reel_type"') >= 0 || text.indexOf('XDTReelDict') >= 0) {
+    if (storyText) {
       for (const payload of payloads) collectStoryReels(payload, storyReelPut, { ms });
     }
     return payloads.length;
@@ -744,10 +819,49 @@
         // profile page server-EMBEDS its own profile payload instead of fetching it, so this is
         // the only path that ever sees bio/counts on a cold load. Missing it here is why the
         // v0.4.1 header came back null on the first real run (2026-07-17).
-        ingestPayloadText(s.textContent, 150);
+        ingestPayloadText(s.textContent, 150, false);
       } catch { /* skip blob */ }
     }
     return scanned;
+  }
+
+  function rewalkStorySources() {
+    const budget = { deadline: now() + 2000, nodes: 5_000_000 };
+    const collectText = (text) => {
+      if (!isStoryText(text)) return true;
+      for (const payload of parseJsonChunks(text)) {
+        if (now() > budget.deadline || budget.nodes <= 0) return false;
+        if (!collectStoryReels(payload, storyReelPut, budget)) return false;
+      }
+      return true;
+    };
+    for (let i = retainedStoryTexts.length - 1; i >= 0; i--) {
+      if (!collectText(retainedStoryTexts[i])) return;
+    }
+    if (typeof document === 'undefined') return;
+    for (const script of document.querySelectorAll('script[type="application/json"]')) {
+      if (!collectText(script.textContent)) return;
+    }
+  }
+
+  function lookupStoryReel(route) {
+    let reel = storyReelFor(route);
+    const watchedPk = route && route.kind === 'story' && route.pk != null ? String(route.pk) : null;
+    const watchedItem = () => watchedPk && reel && reel.items.find((item) => storyItemPk(item) === watchedPk);
+    let item = watchedItem();
+    const rewalked = !reel || (watchedPk && (!item || storyItemRichness(item) < 1000));
+    if (rewalked) {
+      rewalkStorySources();
+      reel = storyReelFor(route);
+      item = watchedItem();
+    }
+    return { reel, diag: {
+      rewalked: !!rewalked,
+      retainedTexts: retainedStoryTexts.length,
+      reelItems: reel ? reel.items.length : 0,
+      pkInReel: watchedPk ? !!item : null,
+      pkUsable: watchedPk ? !!item && storyItemRichness(item) >= 1000 : null,
+    } };
   }
 
   // ---- fiber access ----------------------------------------------------------------------
@@ -803,14 +917,12 @@
       const reqId = String(req.reqId);
       let detail;
       try {
-        let reel = storyReelFor(req.route);
-        if (!reel) {
-          scanInlineScripts();
-          reel = storyReelFor(req.route);
-        }
-        detail = JSON.stringify({ reqId, reel: reel || null });
+        detail = JSON.stringify({ reqId, ...lookupStoryReel(req.route) });
       } catch (err) {
-        detail = JSON.stringify({ reqId, reel: null, error: String((err && err.message) || err) });
+        detail = JSON.stringify({ reqId, reel: null,
+          diag: { rewalked: false, retainedTexts: retainedStoryTexts.length, reelItems: 0,
+            pkInReel: null, pkUsable: null },
+          error: String((err && err.message) || err) });
       }
       document.dispatchEvent(new CustomEvent('igfm-response-story', { detail }));
     });
@@ -954,6 +1066,7 @@
     sanitizeStoryReel,
     storyReelPut,
     storyReelFor,
+    lookupStoryReel,
     ingestPayloadText,
     ingestResponseText,
     scanInlineScripts,
@@ -961,6 +1074,7 @@
     _profileCache: profileCache,
     _highlightCache: highlightCache,
     _storyReelCache: storyReelCache,
+    _retainedStoryTexts: retainedStoryTexts,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api; // node tests
